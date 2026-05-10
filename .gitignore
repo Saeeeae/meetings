@@ -1,0 +1,11 @@
+.env
+data/*
+!data/.gitkeep
+models/*
+!models/.gitkeep
+backend/__pycache__/
+**/__pycache__/
+*.pyc
+backend/.pytest_cache/
+frontend/node_modules/
+frontend/dist/

@@ -1,0 +1,99 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: meeting_minutes
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d meeting_minutes"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  backend:
+    build:
+      context: ./backend
+      args:
+        INSTALL_ML: "false"
+        INSTALL_VLLM: "false"
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/meeting_minutes
+      REDIS_URL: redis://redis:6379/0
+      STORAGE_DIR: /data/storage
+      MODELS_DIR: /models
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/data
+      - ./models:/models
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\"",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  worker:
+    build:
+      context: ./backend
+      args:
+        INSTALL_ML: "false"
+        INSTALL_VLLM: "false"
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/meeting_minutes
+      REDIS_URL: redis://redis:6379/0
+      STORAGE_DIR: /data/storage
+      MODELS_DIR: /models
+      HF_HOME: /models/huggingface
+    command: sh -c "python scripts/download_models.py && celery -A app.workers.celery_app:celery_app worker --loglevel=info --pool=solo --concurrency=1"
+    volumes:
+      - ./data:/data
+      - ./models:/models
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+    environment:
+      VITE_API_BASE_URL: http://localhost:8000
+    command: npm run dev -- --host 0.0.0.0
+    ports:
+      - "5173:5173"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
