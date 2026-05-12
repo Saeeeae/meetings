@@ -7,7 +7,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg \
+    && apt-get install -y --no-install-recommends ffmpeg libsndfile1 sox libsox-fmt-all \
     && rm -rf /var/lib/apt/lists/*
 
 ARG INSTALL_ML=false

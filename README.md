@@ -2,9 +2,261 @@
 
 회의 녹음 파일을 업로드하면 서버에서 STT, 화자 분리, 스크립트 정리, 회의록 생성, 요약 생성을 비동기로 처리하는 MVP 서비스입니다.
 
-기본값은 `mock` provider입니다. GPU, Hugging Face token, LLM API key 없이도 전체 업로드-분석-결과-다운로드 흐름을 검증할 수 있습니다.
+이 문서는 개발자가 아니어도 로컬 PC나 GPU 서버에서 서비스를 실행하고, 브라우저로 녹음 파일을 업로드해 결과를 확인할 수 있도록 작성한 실행 명세서입니다.
 
-## MVP 제품 시퀀스
+## 먼저 고를 실행 방식
+
+처음 실행한다면 아래 둘 중 하나만 고르면 됩니다.
+
+| 목적 | 필요한 장비 | 결과 | 추천 대상 |
+| --- | --- | --- | --- |
+| 화면과 업로드 흐름만 확인 | Docker만 설치된 PC | 데모 transcript 반환 | 설치 확인, 시연 화면 점검 |
+| 실제 Qwen ASR로 음성 인식 | NVIDIA GPU 서버 또는 GPU PC | 실제 녹음 파일 transcription | 실제 테스트, 운영 검증 |
+
+## 준비물
+
+공통 준비물:
+
+- Docker Desktop 또는 Docker Engine
+- 이 프로젝트 폴더 전체
+- 인터넷 연결
+- 브라우저: Chrome, Edge, Safari 중 하나
+- 비어 있는 포트: `5173`, `8000`, `5432`, `6379`
+
+실제 Qwen ASR 실행 준비물:
+
+- NVIDIA GPU 1장 이상. L40S 1GPU 기준으로 설계되어 있습니다.
+- NVIDIA driver와 NVIDIA Container Toolkit
+- 모델 다운로드용 디스크 여유 공간. 처음 실행 시 `models/` 폴더에 Hugging Face 모델을 받습니다.
+- 첫 실행은 모델 다운로드 때문에 오래 걸릴 수 있습니다.
+
+선택 준비물:
+
+- 화자 분리를 실제로 쓰려면 Hugging Face token과 pyannote 모델 접근 권한
+- 로컬 LLM까지 쓰려면 vLLM 또는 OpenAI-compatible endpoint
+
+## 1. 폴더 열기
+
+터미널에서 프로젝트 폴더로 이동합니다.
+
+```bash
+cd meeting-minutes-ai
+```
+
+현재 위치가 맞는지 확인합니다.
+
+```bash
+ls
+```
+
+아래 파일이 보이면 맞습니다.
+
+```text
+docker-compose.yml
+docker-compose.gpu.yml
+backend
+frontend
+models
+data
+```
+
+## 2. 설정 파일 확인
+
+실행 설정은 `.env` 파일에서 바꿉니다.
+
+처음 받은 폴더에 `.env`가 없다면 `.env.example`을 복사합니다.
+
+```bash
+cp .env.example .env
+```
+
+`.env`는 메모장, VS Code, nano 등 편한 편집기로 수정하면 됩니다.
+
+## 3. 데모 모드로 실행하기
+
+GPU 없이 화면과 업로드 흐름만 확인하는 방식입니다. 실제 음성 인식 결과가 아니라 샘플 결과가 나옵니다.
+
+`.env`에서 아래 값으로 바꿉니다.
+
+```env
+STT_PROVIDER=mock
+DIARIZATION_PROVIDER=mock
+LLM_PROVIDER=mock
+VLLM_ON_DEMAND=false
+```
+
+실행합니다.
+
+```bash
+docker compose up --build
+```
+
+브라우저에서 접속합니다.
+
+```text
+http://localhost:5173
+```
+
+녹음 파일을 업로드하면 데모 결과가 생성됩니다.
+
+## 4. 실제 Qwen ASR로 실행하기
+
+실제 녹음 파일을 Qwen ASR로 음성 인식하는 방식입니다. GPU가 필요합니다.
+
+`.env`에서 STT 설정을 아래처럼 둡니다.
+
+```env
+STT_PROVIDER=qwen_asr
+STT_LANGUAGE=ko
+QWEN_ASR_MODEL=Qwen/Qwen3-ASR-1.7B
+QWEN_ASR_FORCED_ALIGNER_MODEL=Qwen/Qwen3-ForcedAligner-0.6B
+QWEN_ASR_DTYPE=bfloat16
+QWEN_ASR_DEVICE_MAP=cuda:0
+QWEN_ASR_MAX_INFERENCE_BATCH_SIZE=8
+QWEN_ASR_MAX_NEW_TOKENS=4096
+QWEN_ASR_RETURN_TIMESTAMPS=true
+```
+
+처음에는 화자 분리와 LLM을 mock으로 두고 STT만 먼저 확인하는 것을 권장합니다.
+
+```env
+DIARIZATION_PROVIDER=mock
+LLM_PROVIDER=mock
+VLLM_ON_DEMAND=false
+```
+
+GPU 모드로 실행합니다.
+
+```bash
+CUDA_VISIBLE_DEVICES=0 docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
+```
+
+첫 실행 중 worker 로그에 모델 다운로드 메시지가 보입니다. 다운로드가 끝난 뒤 브라우저에서 접속합니다.
+
+```text
+http://localhost:5173
+```
+
+## 5. 파일 업로드와 결과 확인
+
+지원 파일 형식:
+
+```text
+.mp3 .wav .m4a .aac .flac .mp4 .webm
+```
+
+사용 순서:
+
+1. 브라우저에서 `http://localhost:5173` 접속
+2. 녹음 파일 선택
+3. 업로드
+4. 상태가 `completed`가 될 때까지 대기
+5. 결과 화면에서 원문, 화자별 transcript, 회의록, 요약 확인
+6. 필요한 결과 다운로드
+
+업로드 파일과 결과 데이터는 `data/` 폴더에 저장됩니다. 다운로드된 모델은 `models/` 폴더에 저장됩니다.
+
+## 6. 종료와 재실행
+
+실행 중인 터미널에서 종료:
+
+```bash
+Ctrl + C
+```
+
+컨테이너 정리:
+
+```bash
+docker compose down
+```
+
+GPU 모드로 실행한 컨테이너 정리:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml down
+```
+
+다시 실행할 때는 같은 실행 명령을 다시 입력하면 됩니다. `models/` 폴더가 남아 있으면 이미 받은 모델은 다시 받지 않습니다.
+
+## 7. 로그 확인
+
+전체 로그:
+
+```bash
+docker compose logs -f
+```
+
+worker 로그만 확인:
+
+```bash
+docker compose logs -f worker
+```
+
+GPU 모드 worker 로그:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml logs -f worker
+```
+
+## 8. 자주 쓰는 설정 명세
+
+| 설정 | 의미 | 추천값 |
+| --- | --- | --- |
+| `STT_PROVIDER` | 음성 인식 방식 | 실제 실행은 `qwen_asr`, 데모는 `mock` |
+| `STT_LANGUAGE` | 음성 언어 | 한국어는 `ko`, 자동 감지는 빈 값 |
+| `QWEN_ASR_MODEL` | Hugging Face Qwen ASR 모델명 | `Qwen/Qwen3-ASR-1.7B` |
+| `QWEN_ASR_FORCED_ALIGNER_MODEL` | timestamp 생성용 모델명 | `Qwen/Qwen3-ForcedAligner-0.6B` |
+| `DIARIZATION_PROVIDER` | 화자 분리 방식 | 처음 테스트는 `mock`, 실제 화자분리는 `pyannote` |
+| `LLM_PROVIDER` | 회의록 생성 LLM 방식 | 처음 테스트는 `mock` |
+| `VLLM_ON_DEMAND` | 작업 중 vLLM 자동 실행 여부 | 처음 테스트는 `false` |
+| `HUGGINGFACE_TOKEN` | Hugging Face 접근 token | pyannote 사용 시 필요 |
+
+## 9. 문제 해결
+
+`docker: command not found`
+
+Docker가 설치되어 있지 않거나 터미널에서 Docker를 찾지 못하는 상태입니다. Docker Desktop 또는 Docker Engine 설치 후 다시 실행합니다.
+
+`port is already allocated`
+
+이미 같은 포트를 쓰는 프로그램이 있습니다. 기존 컨테이너를 끕니다.
+
+```bash
+docker compose down
+```
+
+브라우저에서 접속이 안 됨
+
+서비스가 아직 뜨는 중일 수 있습니다. 터미널 로그에서 `frontend`와 `backend`가 정상 시작됐는지 확인한 뒤 `http://localhost:5173`으로 접속합니다.
+
+Qwen ASR 첫 실행이 너무 오래 걸림
+
+정상일 수 있습니다. 첫 실행은 Hugging Face에서 모델을 받기 때문에 오래 걸립니다. `models/` 폴더를 지우지 않으면 다음 실행부터는 다운로드를 건너뜁니다.
+
+GPU 메모리 부족 오류
+
+동시에 여러 worker를 띄우지 말고 1개 worker만 사용합니다. 그래도 부족하면 `QWEN_ASR_MAX_INFERENCE_BATCH_SIZE=4` 또는 `QWEN_ASR_MODEL=Qwen/Qwen3-ASR-0.6B`로 낮춰 테스트합니다.
+
+pyannote 다운로드 오류
+
+`HUGGINGFACE_TOKEN`이 비어 있거나 pyannote 모델 접근 권한이 없을 가능성이 큽니다. 처음에는 `DIARIZATION_PROVIDER=mock`으로 둔 뒤 STT부터 확인합니다.
+
+결과가 데모 문장으로 나옴
+
+`.env`의 `STT_PROVIDER`, `DIARIZATION_PROVIDER`, `LLM_PROVIDER`가 `mock`인지 확인합니다. 실제 Qwen ASR을 쓰려면 `STT_PROVIDER=qwen_asr`로 바꿔야 합니다.
+
+## 10. 운영 체크리스트
+
+- `.env`가 원하는 실행 모드로 설정되어 있는지 확인
+- GPU 모드는 `docker-compose.gpu.yml`을 함께 사용
+- 첫 실행 전 디스크 여유 공간 확인
+- `models/` 폴더는 모델 캐시이므로 운영 중 삭제하지 않기
+- 여러 작업을 동시에 돌리기 전 GPU 메모리 사용량 확인
+- 데모 모드 결과는 실제 분석 결과가 아니라는 점을 사용자에게 고지
+
+## 참고: 내부 구조
+
+### 처리 순서
 
 ```text
 사용자가 Windows 또는 회의 플랫폼에서 녹음 파일 준비
@@ -21,7 +273,7 @@
 → 회의록/요약/스크립트 다운로드
 ```
 
-## 아키텍처
+### 아키텍처
 
 ```text
 frontend React/Vite
@@ -37,7 +289,7 @@ frontend React/Vite
       → result 저장
 ```
 
-## 폴더 구조
+### 폴더 구조
 
 ```text
 meeting-minutes-ai/
@@ -71,43 +323,6 @@ meeting-minutes-ai/
   data/
 ```
 
-## 빠른 실행
-
-```bash
-cd meeting-minutes-ai
-docker compose up --build
-```
-
-브라우저에서 접속합니다.
-
-```text
-http://localhost:5173
-```
-
-Backend health check:
-
-```bash
-curl http://localhost:8000/health
-```
-
-## Mock Provider 테스트
-
-기본 `.env`는 다음 provider를 사용합니다.
-
-```env
-STT_PROVIDER=mock
-DIARIZATION_PROVIDER=mock
-LLM_PROVIDER=mock
-```
-
-이 상태에서는 업로드된 오디오를 ffmpeg로 16kHz mono WAV로 변환한 뒤, STT/화자분리/LLM 결과는 데모 데이터를 반환합니다.
-
-지원 파일 형식:
-
-```text
-.mp3 .wav .m4a .aac .flac .mp4 .webm
-```
-
 ## 모델 캐시와 다운로드
 
 로컬 `./models` 디렉터리가 컨테이너의 `/models`로 마운트됩니다.
@@ -118,6 +333,7 @@ LLM_PROVIDER=mock
 
 worker 시작 시 `backend/scripts/download_models.py`가 실행됩니다.
 
+- `STT_PROVIDER=qwen_asr`이면 `/models/qwen-asr/{QWEN_ASR_MODEL}`과 `/models/qwen-asr/{QWEN_ASR_FORCED_ALIGNER_MODEL}`을 확인합니다.
 - `STT_PROVIDER=faster_whisper`이면 `/models/faster-whisper/{FASTER_WHISPER_MODEL}`을 확인합니다.
 - 모델 파일이 이미 있으면 다운로드를 건너뜁니다.
 - 없으면 Hugging Face에서 다운로드합니다.
@@ -139,6 +355,12 @@ python backend/scripts/download_models.py
 DOWNLOAD_FAST_WHISPER_MODEL=1 FASTER_WHISPER_MODEL=small python backend/scripts/download_models.py
 ```
 
+강제로 Qwen ASR 모델과 forced aligner 받기:
+
+```bash
+DOWNLOAD_QWEN_ASR_MODEL=1 QWEN_ASR_MODEL=Qwen/Qwen3-ASR-1.7B python backend/scripts/download_models.py
+```
+
 강제로 pyannote 모델 받기:
 
 ```bash
@@ -151,21 +373,39 @@ DOWNLOAD_PYANNOTE_MODEL=1 HUGGINGFACE_TOKEN=... python backend/scripts/download_
 DOWNLOAD_VLLM_MODEL=1 VLLM_MODEL=Qwen/Qwen2.5-7B-Instruct python backend/scripts/download_models.py
 ```
 
-## faster-whisper 설정
+## Qwen ASR 설정
 
 `.env`를 수정합니다.
 
 ```env
-STT_PROVIDER=faster_whisper
-FASTER_WHISPER_MODEL=small
-FASTER_WHISPER_DEVICE=auto
-FASTER_WHISPER_COMPUTE_TYPE=int8
+STT_PROVIDER=qwen_asr
+STT_LANGUAGE=ko
+QWEN_ASR_MODEL=Qwen/Qwen3-ASR-1.7B
+QWEN_ASR_FORCED_ALIGNER_MODEL=Qwen/Qwen3-ForcedAligner-0.6B
+QWEN_ASR_DTYPE=bfloat16
+QWEN_ASR_DEVICE_MAP=cuda:0
+QWEN_ASR_MAX_INFERENCE_BATCH_SIZE=8
+QWEN_ASR_MAX_NEW_TOKENS=4096
+QWEN_ASR_RETURN_TIMESTAMPS=true
 ```
 
 GPU/ML 의존성을 포함해 실행합니다.
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
+```
+
+`STT_LANGUAGE=ko`는 내부적으로 Qwen ASR의 `Korean`으로 매핑됩니다. 빈 값으로 두면 Qwen ASR의 자동 언어 감지를 사용합니다.
+
+## faster-whisper 설정
+
+기존 faster-whisper provider도 호환성 목적으로 유지됩니다.
+
+```env
+STT_PROVIDER=faster_whisper
+FASTER_WHISPER_MODEL=small
+FASTER_WHISPER_DEVICE=auto
+FASTER_WHISPER_COMPUTE_TYPE=int8
 ```
 
 ## pyannote 설정
@@ -223,10 +463,15 @@ ffmpeg: CPU
 `.env` 예시:
 
 ```env
-STT_PROVIDER=faster_whisper
-FASTER_WHISPER_MODEL=small
-FASTER_WHISPER_DEVICE=cuda
-FASTER_WHISPER_COMPUTE_TYPE=float16
+STT_PROVIDER=qwen_asr
+STT_LANGUAGE=ko
+QWEN_ASR_MODEL=Qwen/Qwen3-ASR-1.7B
+QWEN_ASR_FORCED_ALIGNER_MODEL=Qwen/Qwen3-ForcedAligner-0.6B
+QWEN_ASR_DTYPE=bfloat16
+QWEN_ASR_DEVICE_MAP=cuda:0
+QWEN_ASR_MAX_INFERENCE_BATCH_SIZE=8
+QWEN_ASR_MAX_NEW_TOKENS=4096
+QWEN_ASR_RETURN_TIMESTAMPS=true
 
 DIARIZATION_PROVIDER=pyannote
 PYANNOTE_MODEL=pyannote/speaker-diarization-3.1

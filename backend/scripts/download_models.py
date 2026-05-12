@@ -22,7 +22,7 @@ def bool_env(name: str) -> bool:
 
 
 def has_files(path: Path) -> bool:
-    return path.exists() and any(path.iterdir())
+    return path.is_dir() and any(path.iterdir())
 
 
 def resolve_models_dir(project_root: Path) -> Path:
@@ -81,6 +81,33 @@ def download_pyannote(models_dir: Path) -> None:
     snapshot_download(model_id, target, token=token)
 
 
+def download_qwen_asr_model(models_dir: Path) -> None:
+    model_id = os.getenv("QWEN_ASR_MODEL") or "Qwen/Qwen3-ASR-1.7B"
+    raw_forced_aligner_id = os.getenv("QWEN_ASR_FORCED_ALIGNER_MODEL")
+    forced_aligner_id = (
+        "Qwen/Qwen3-ForcedAligner-0.6B" if raw_forced_aligner_id is None else raw_forced_aligner_id
+    )
+    token = os.getenv("HUGGINGFACE_TOKEN") or os.getenv("HF_TOKEN")
+
+    for label, repo_id in (("Qwen ASR", model_id), ("Qwen ASR forced aligner", forced_aligner_id)):
+        if not repo_id:
+            print(f"[models] {label} model is empty, skipping.")
+            continue
+
+        model_path = Path(repo_id)
+        if model_path.is_absolute() and has_files(model_path):
+            print(f"[models] {label} points to an existing local path, skipping: {model_path}")
+            continue
+
+        target = models_dir / "qwen-asr" / safe_model_dir_name(repo_id)
+        if has_files(target):
+            print(f"[models] {label} model already exists, skipping: {target}")
+            continue
+
+        print(f"[models] downloading {label} model {repo_id} -> {target}")
+        snapshot_download(repo_id, target, token=token)
+
+
 def download_vllm_model(models_dir: Path) -> None:
     model_id = os.getenv("VLLM_MODEL") or os.getenv("LLM_MODEL")
     if not model_id:
@@ -125,6 +152,11 @@ def main() -> None:
         download_faster_whisper(models_dir)
     else:
         print("[models] faster-whisper download not needed for current STT_PROVIDER.")
+
+    if stt_provider in {"qwen_asr", "qwen-asr", "qwen3_asr", "qwen3-asr"} or bool_env("DOWNLOAD_QWEN_ASR_MODEL"):
+        download_qwen_asr_model(models_dir)
+    else:
+        print("[models] Qwen ASR download not needed for current STT_PROVIDER.")
 
     if diarization_provider == "pyannote" or bool_env("DOWNLOAD_PYANNOTE_MODEL"):
         download_pyannote(models_dir)

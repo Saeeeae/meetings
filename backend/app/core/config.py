@@ -22,6 +22,13 @@ class Settings(BaseSettings):
     faster_whisper_model: str = "small"
     faster_whisper_device: str = "auto"
     faster_whisper_compute_type: str = "int8"
+    qwen_asr_model: str | None = "Qwen/Qwen3-ASR-1.7B"
+    qwen_asr_forced_aligner_model: str | None = "Qwen/Qwen3-ForcedAligner-0.6B"
+    qwen_asr_dtype: str | None = "bfloat16"
+    qwen_asr_device_map: str | None = "cuda:0"
+    qwen_asr_max_inference_batch_size: int | None = 8
+    qwen_asr_max_new_tokens: int | None = 4096
+    qwen_asr_return_timestamps: bool | None = True
 
     diarization_provider: str = "mock"
     pyannote_model: str = "pyannote/speaker-diarization-3.1"
@@ -70,9 +77,37 @@ class Settings(BaseSettings):
         }
     )
 
-    @field_validator("vllm_max_model_len", mode="before")
+    @field_validator(
+        "qwen_asr_model",
+        "qwen_asr_forced_aligner_model",
+        "qwen_asr_dtype",
+        "qwen_asr_device_map",
+        "vllm_dtype",
+        "vllm_extra_args",
+        "vllm_command",
+        mode="before",
+    )
     @classmethod
-    def empty_string_to_none(cls, value):
+    def empty_string_to_none_string(cls, value):
+        if value == "":
+            return None
+        return value
+
+    @field_validator(
+        "qwen_asr_max_inference_batch_size",
+        "qwen_asr_max_new_tokens",
+        "vllm_max_model_len",
+        mode="before",
+    )
+    @classmethod
+    def empty_string_to_none_int(cls, value):
+        if value == "":
+            return None
+        return value
+
+    @field_validator("qwen_asr_return_timestamps", mode="before")
+    @classmethod
+    def empty_string_to_none_bool(cls, value):
         if value == "":
             return None
         return value
