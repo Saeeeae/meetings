@@ -3,6 +3,7 @@ import shlex
 import subprocess
 import time
 from pathlib import Path
+from typing import IO
 
 import httpx
 
@@ -11,11 +12,35 @@ from app.core.config import Settings, settings
 logger = logging.getLogger(__name__)
 
 
+_warm_process: subprocess.Popen | None = None
+_warm_log_file: IO[bytes] | None = None
+
+
+def shutdown_warm_vllm() -> None:
+    global _warm_process, _warm_log_file
+    if _warm_process is None:
+        return
+    logger.info("Shutting down warm vLLM server (worker shutdown).")
+    try:
+        _warm_process.terminate()
+        try:
+            _warm_process.wait(timeout=settings.vllm_shutdown_timeout_seconds)
+        except subprocess.TimeoutExpired:
+            logger.warning("Warm vLLM did not stop in time; killing process.")
+            _warm_process.kill()
+            _warm_process.wait(timeout=10)
+    finally:
+        _warm_process = None
+        if _warm_log_file is not None:
+            _warm_log_file.close()
+            _warm_log_file = None
+
+
 class OnDemandVLLM:
     def __init__(self, app_settings: Settings = settings) -> None:
         self.settings = app_settings
         self.process: subprocess.Popen | None = None
-        self.log_file = None
+        self.log_file: IO[bytes] | None = None
         self._started_by_manager = False
 
     def __enter__(self) -> "OnDemandVLLM":
@@ -25,8 +50,14 @@ class OnDemandVLLM:
         if self.settings.llm_provider.lower() not in {"openai", "openai_compatible", "openai-compatible"}:
             raise RuntimeError("VLLM_ON_DEMAND requires LLM_PROVIDER=openai_compatible.")
 
+        if self.settings.vllm_warm_keep and _warm_process is not None and _warm_process.poll() is None:
+            self.process = _warm_process
+            self.log_file = _warm_log_file
+            logger.debug("Reusing warm-kept vLLM server.")
+            return self
+
         if self._health_check():
-            if self.settings.vllm_reuse_existing:
+            if self.settings.vllm_reuse_existing or self.settings.vllm_warm_keep:
                 logger.info("Existing vLLM server is healthy; reusing it for this job.")
                 return self
             raise RuntimeError(f"vLLM port is already serving: {self.settings.vllm_health_url}")
@@ -34,6 +65,7 @@ class OnDemandVLLM:
         command = self._build_command()
         log_dir = self.settings.storage_dir / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
+        self._prune_old_logs(log_dir)
         log_path = log_dir / f"vllm-{int(time.time())}.log"
         self.log_file = log_path.open("ab")
 
@@ -52,11 +84,17 @@ class OnDemandVLLM:
 
         self._started_by_manager = True
         self._wait_until_ready()
+
+        if self.settings.vllm_warm_keep:
+            self._promote_to_warm()
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
         if not self._started_by_manager or self.process is None:
             self._close_log()
+            return
+
+        if self.settings.vllm_warm_keep and _warm_process is self.process:
             return
 
         logger.info("Stopping on-demand vLLM server.")
@@ -70,10 +108,24 @@ class OnDemandVLLM:
         finally:
             self._close_log()
 
+    def _promote_to_warm(self) -> None:
+        global _warm_process, _warm_log_file
+        _warm_process = self.process
+        _warm_log_file = self.log_file
+
+    def _prune_old_logs(self, log_dir: Path) -> None:
+        retention = max(1, self.settings.vllm_log_retention)
+        existing = sorted(log_dir.glob("vllm-*.log"), key=lambda p: p.stat().st_mtime, reverse=True)
+        for stale in existing[retention - 1 :]:
+            try:
+                stale.unlink()
+            except OSError as exc:
+                logger.warning("Failed to prune vLLM log %s: %s", stale, exc)
+
     def _close_log(self) -> None:
-        if self.log_file:
+        if self.log_file is not None and self.log_file is not _warm_log_file:
             self.log_file.close()
-            self.log_file = None
+        self.log_file = None
 
     def _build_command(self) -> list[str]:
         if self.settings.vllm_command:

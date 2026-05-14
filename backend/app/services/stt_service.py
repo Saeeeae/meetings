@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+import inspect
 import wave
 from pathlib import Path
 from typing import Any
@@ -28,56 +29,8 @@ class MockSTTService(STTService):
                 {"start": 9.0, "end": 15.0, "text": "API 구현은 완료되었고 프론트엔드 연동이 남아 있습니다."},
                 {"start": 15.0, "end": 22.0, "text": "다음 주까지 업로드 안정성과 결과 다운로드를 검증하겠습니다."},
             ],
+            "words": [],
         }
-
-
-class FasterWhisperSTTService(STTService):
-    def __init__(self, app_settings: Settings = settings) -> None:
-        self.settings = app_settings
-        self._model = None
-
-    def _resolve_model_reference(self) -> str:
-        model_name = self.settings.faster_whisper_model
-        local_path = self.settings.models_dir / "faster-whisper" / model_name
-        if local_path.exists() and any(local_path.iterdir()):
-            return str(local_path)
-        return model_name
-
-    def _load_model(self):
-        if self._model is not None:
-            return self._model
-
-        try:
-            from faster_whisper import WhisperModel
-        except ImportError as exc:
-            raise RuntimeError(
-                "faster-whisper is not installed. Install backend/requirements-ml.txt or use STT_PROVIDER=mock."
-            ) from exc
-
-        self.settings.models_dir.mkdir(parents=True, exist_ok=True)
-        download_root = self.settings.models_dir / "faster-whisper"
-        download_root.mkdir(parents=True, exist_ok=True)
-        self._model = WhisperModel(
-            self._resolve_model_reference(),
-            device=self.settings.faster_whisper_device,
-            compute_type=self.settings.faster_whisper_compute_type,
-            download_root=str(download_root),
-        )
-        return self._model
-
-    def transcribe(self, audio_path: str) -> dict[str, Any]:
-        if not Path(audio_path).exists():
-            raise RuntimeError("Audio file was not found for STT")
-
-        model = self._load_model()
-        language = self.settings.stt_language or None
-        segments, info = model.transcribe(audio_path, language=language, vad_filter=True)
-        normalized_segments = [
-            {"start": float(segment.start), "end": float(segment.end), "text": segment.text.strip()}
-            for segment in segments
-        ]
-        text = " ".join(segment["text"] for segment in normalized_segments).strip()
-        return {"language": getattr(info, "language", language or "unknown"), "text": text, "segments": normalized_segments}
 
 
 class QwenASRSTTService(STTService):
@@ -260,6 +213,17 @@ class QwenASRSTTService(STTService):
                 text += f" {token}"
         return " ".join(text.split())
 
+    def _words_from_timestamp_items(self, items: list[Any]) -> list[dict[str, Any]]:
+        words: list[dict[str, Any]] = []
+        for item in items:
+            token = str(getattr(item, "text", "")).strip()
+            if not token:
+                continue
+            start = float(getattr(item, "start_time", 0.0))
+            end = float(getattr(item, "end_time", start))
+            words.append({"start": start, "end": end, "text": token})
+        return words
+
     def _segments_from_timestamp_items(self, items: list[Any], language: str | None) -> list[dict[str, Any]]:
         segments: list[dict[str, Any]] = []
         current_tokens: list[str] = []
@@ -297,9 +261,12 @@ class QwenASRSTTService(STTService):
         flush()
         return segments
 
-    def _segments_from_result(self, result: Any, audio_path: str) -> list[dict[str, Any]]:
+    def _extract_items(self, result: Any) -> list[Any]:
         timestamps = getattr(result, "time_stamps", None)
-        items = list(getattr(timestamps, "items", []) or [])
+        return list(getattr(timestamps, "items", []) or [])
+
+    def _segments_from_result(self, result: Any, audio_path: str) -> list[dict[str, Any]]:
+        items = self._extract_items(result)
         if items:
             return self._segments_from_timestamp_items(items, getattr(result, "language", None))
 
@@ -317,22 +284,47 @@ class QwenASRSTTService(STTService):
         return_timestamps = self.settings.qwen_asr_return_timestamps is not False and bool(
             self.settings.qwen_asr_forced_aligner_model
         )
-        results = model.transcribe(audio=audio_path, language=language, return_time_stamps=return_timestamps)
+        call_kwargs: dict[str, Any] = {
+            "audio": audio_path,
+            "language": language,
+            "return_time_stamps": return_timestamps,
+        }
+        lexicon_terms = self.settings.load_lexicon_terms()
+        if lexicon_terms:
+            params = inspect.signature(model.transcribe).parameters
+            context_text = ", ".join(lexicon_terms)
+            if "context" in params:
+                call_kwargs["context"] = context_text
+            elif "hotwords" in params:
+                call_kwargs["hotwords"] = context_text
+        results = model.transcribe(**call_kwargs)
         if not results:
             return {"language": language or "unknown", "text": "", "segments": []}
 
         result = results[0]
         text = str(getattr(result, "text", "") or "").strip()
-        segments = self._segments_from_result(result, audio_path)
-        return {"language": getattr(result, "language", language or "unknown"), "text": text, "segments": segments}
+        items = self._extract_items(result)
+        words = self._words_from_timestamp_items(items)
+        segments = (
+            self._segments_from_timestamp_items(items, getattr(result, "language", None))
+            if items
+            else self._segments_from_result(result, audio_path)
+        )
+        return {
+            "language": getattr(result, "language", language or "unknown"),
+            "text": text,
+            "segments": segments,
+            "words": words,
+        }
 
 
 def get_stt_service(app_settings: Settings = settings) -> STTService:
     provider = app_settings.stt_provider.lower()
     if provider == "mock":
         return MockSTTService()
-    if provider in {"faster_whisper", "faster-whisper"}:
-        return FasterWhisperSTTService(app_settings)
     if provider in {"qwen_asr", "qwen-asr", "qwen3_asr", "qwen3-asr"}:
         return QwenASRSTTService(app_settings)
-    raise RuntimeError(f"Unsupported STT_PROVIDER: {app_settings.stt_provider}")
+    raise RuntimeError(
+        f"Unsupported STT_PROVIDER: {app_settings.stt_provider}. "
+        "Supported providers: qwen_asr, mock."
+    )

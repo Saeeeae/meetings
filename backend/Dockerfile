@@ -24,5 +24,7 @@ RUN if [ "$INSTALL_VLLM" = "true" ]; then \
 
 COPY app ./app
 COPY scripts ./scripts
+COPY alembic.ini ./alembic.ini
+COPY migrations ./migrations
 
 RUN chmod +x /app/scripts/download_models.py
