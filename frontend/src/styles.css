@@ -325,6 +325,139 @@ h2 {
   overflow-wrap: anywhere;
 }
 
+.result-audio {
+  width: 100%;
+  margin-bottom: 12px;
+}
+
+.segment-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid #d8dde5;
+  border-radius: 8px;
+  max-height: 620px;
+  overflow: auto;
+  background: #ffffff;
+}
+
+.segment-list li {
+  border-bottom: 1px solid #eef0f3;
+}
+
+.segment-list li:last-child {
+  border-bottom: none;
+}
+
+.segment-row {
+  display: grid;
+  grid-template-columns: 84px 120px 1fr;
+  gap: 12px;
+  align-items: baseline;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  padding: 10px 12px;
+  cursor: pointer;
+  font-size: 13px;
+  color: #1a1d23;
+}
+
+.segment-row:hover,
+.segment-row:focus-visible {
+  background: #f3f7ff;
+  outline: none;
+}
+
+.segment-time {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  color: #5b6573;
+  font-size: 12px;
+}
+
+.segment-speaker {
+  color: #1f57b3;
+  font-weight: 500;
+  font-size: 12px;
+}
+
+.segment-text {
+  color: inherit;
+  line-height: 1.5;
+}
+
+.retry-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.muted {
+  color: #5b6573;
+  display: block;
+  margin: 6px 0;
+}
+
+.upload-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  background: #ffffff;
+  border: 1px solid #d8dde5;
+  border-radius: 8px;
+}
+
+.upload-progress small {
+  color: #5b6573;
+  font-size: 12px;
+}
+
+.result-markdown {
+  background: #ffffff;
+  color: #1a1d23;
+  font-family: inherit;
+  font-size: 14px;
+  white-space: normal;
+}
+
+.result-markdown h1,
+.result-markdown h2,
+.result-markdown h3 {
+  margin: 18px 0 8px;
+  line-height: 1.3;
+}
+
+.result-markdown h1 { font-size: 20px; }
+.result-markdown h2 { font-size: 17px; }
+.result-markdown h3 { font-size: 15px; }
+
+.result-markdown p { margin: 6px 0; }
+.result-markdown ul,
+.result-markdown ol { margin: 6px 0 6px 22px; padding: 0; }
+.result-markdown li { margin: 3px 0; }
+.result-markdown table {
+  border-collapse: collapse;
+  margin: 10px 0;
+  width: 100%;
+}
+.result-markdown th,
+.result-markdown td {
+  border: 1px solid #d8dde5;
+  padding: 6px 10px;
+  text-align: left;
+  font-size: 13px;
+}
+.result-markdown th { background: #f3f5f8; }
+.result-markdown code {
+  background: #f3f5f8;
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 12px;
+}
+
 @media (max-width: 980px) {
   .app-shell {
     padding: 18px;

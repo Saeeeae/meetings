@@ -334,7 +334,6 @@ meeting-minutes-ai/
 worker 시작 시 `backend/scripts/download_models.py`가 실행됩니다.
 
 - `STT_PROVIDER=qwen_asr`이면 `/models/qwen-asr/{QWEN_ASR_MODEL}`과 `/models/qwen-asr/{QWEN_ASR_FORCED_ALIGNER_MODEL}`을 확인합니다.
-- `STT_PROVIDER=faster_whisper`이면 `/models/faster-whisper/{FASTER_WHISPER_MODEL}`을 확인합니다.
 - 모델 파일이 이미 있으면 다운로드를 건너뜁니다.
 - 없으면 Hugging Face에서 다운로드합니다.
 - `DIARIZATION_PROVIDER=pyannote`이면 `/models/pyannote/{모델명}`을 확인합니다.
@@ -347,12 +346,6 @@ worker 시작 시 `backend/scripts/download_models.py`가 실행됩니다.
 ```bash
 cd meeting-minutes-ai
 python backend/scripts/download_models.py
-```
-
-강제로 faster-whisper 모델만 받기:
-
-```bash
-DOWNLOAD_FAST_WHISPER_MODEL=1 FASTER_WHISPER_MODEL=small python backend/scripts/download_models.py
 ```
 
 강제로 Qwen ASR 모델과 forced aligner 받기:
@@ -395,18 +388,7 @@ GPU/ML 의존성을 포함해 실행합니다.
 docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
 ```
 
-`STT_LANGUAGE=ko`는 내부적으로 Qwen ASR의 `Korean`으로 매핑됩니다. 빈 값으로 두면 Qwen ASR의 자동 언어 감지를 사용합니다.
-
-## faster-whisper 설정
-
-기존 faster-whisper provider도 호환성 목적으로 유지됩니다.
-
-```env
-STT_PROVIDER=faster_whisper
-FASTER_WHISPER_MODEL=small
-FASTER_WHISPER_DEVICE=auto
-FASTER_WHISPER_COMPUTE_TYPE=int8
-```
+`STT_LANGUAGE=ko`는 내부적으로 Qwen ASR의 `Korean`으로 매핑됩니다. 빈 값으로 두면 Qwen ASR의 자동 언어 감지를 사용합니다. 한국어/영어 회의 모두 자동 감지가 잘 동작합니다.
 
 ## pyannote 설정
 

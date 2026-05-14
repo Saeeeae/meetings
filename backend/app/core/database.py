@@ -1,9 +1,14 @@
+import logging
 from collections.abc import Generator
+from pathlib import Path
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.core.config import settings
+
+
+logger = logging.getLogger(__name__)
 
 
 def _normalize_database_url(database_url: str) -> str:
@@ -31,4 +36,25 @@ def get_db() -> Generator[Session, None, None]:
 def init_db() -> None:
     from app.models import job, result  # noqa: F401
 
+    if _run_alembic_migrations():
+        return
+
+    logger.warning("Alembic not available; falling back to Base.metadata.create_all().")
     Base.metadata.create_all(bind=engine)
+
+
+def _run_alembic_migrations() -> bool:
+    alembic_ini = Path(__file__).resolve().parents[2] / "alembic.ini"
+    if not alembic_ini.exists():
+        return False
+    try:
+        from alembic import command
+        from alembic.config import Config
+    except ImportError:
+        return False
+
+    cfg = Config(str(alembic_ini))
+    cfg.set_main_option("script_location", str(alembic_ini.parent / "migrations"))
+    cfg.set_main_option("sqlalchemy.url", _normalize_database_url(settings.database_url))
+    command.upgrade(cfg, "head")
+    return True

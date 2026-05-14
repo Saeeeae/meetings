@@ -53,18 +53,6 @@ def snapshot_download(repo_id: str, target: Path, token: str | None = None) -> N
     )
 
 
-def download_faster_whisper(models_dir: Path) -> None:
-    model_name = os.getenv("FASTER_WHISPER_MODEL", "small")
-    target = models_dir / "faster-whisper" / model_name
-    if has_files(target):
-        print(f"[models] faster-whisper model already exists, skipping: {target}")
-        return
-
-    repo_id = model_name if "/" in model_name else f"Systran/faster-whisper-{model_name}"
-    print(f"[models] downloading faster-whisper model {repo_id} -> {target}")
-    snapshot_download(repo_id, target, token=os.getenv("HUGGINGFACE_TOKEN") or os.getenv("HF_TOKEN"))
-
-
 def download_pyannote(models_dir: Path) -> None:
     model_id = os.getenv("PYANNOTE_MODEL", "pyannote/speaker-diarization-3.1")
     safe_name = safe_model_dir_name(model_id)
@@ -144,14 +132,9 @@ def main() -> None:
     models_dir = resolve_models_dir(project_root)
     models_dir.mkdir(parents=True, exist_ok=True)
 
-    stt_provider = os.getenv("STT_PROVIDER", "mock").lower()
+    stt_provider = os.getenv("STT_PROVIDER", "qwen_asr").lower()
     diarization_provider = os.getenv("DIARIZATION_PROVIDER", "mock").lower()
     vllm_on_demand = bool_env("VLLM_ON_DEMAND")
-
-    if stt_provider in {"faster_whisper", "faster-whisper"} or bool_env("DOWNLOAD_FAST_WHISPER_MODEL"):
-        download_faster_whisper(models_dir)
-    else:
-        print("[models] faster-whisper download not needed for current STT_PROVIDER.")
 
     if stt_provider in {"qwen_asr", "qwen-asr", "qwen3_asr", "qwen3-asr"} or bool_env("DOWNLOAD_QWEN_ASR_MODEL"):
         download_qwen_asr_model(models_dir)

@@ -4,28 +4,245 @@ from typing import Any
 import httpx
 
 from app.core.config import Settings, settings
+from app.utils.text_chunking import chunk_by_lines
+
+
+PROMPTS_BY_LANG: dict[str, dict[str, str]] = {
+    "ko": {
+        "cleanup_system": "한국어 회의 대화 스크립트를 의미 왜곡 없이 문장부호와 반복만 정리한다.",
+        "cleanup_user_prefix": "화자별 발화 형식을 유지해서 정리하세요.",
+        "lexicon_template": (
+            " 다음 용어 사전을 우선 적용해 STT 오인식을 보정하되, 사전에 없는 단어는 "
+            "임의로 바꾸지 마세요. 사전: {terms}"
+        ),
+        "minutes_system": (
+            "한국어 회의록을 Markdown으로 작성한다. 필수 섹션: 회의 개요, 참석자 / 화자, "
+            "주요 논의 사항, 결정 사항, 액션 아이템, 이슈 및 리스크, 다음 회의에서 논의할 사항."
+        ),
+        "minutes_partial_system": (
+            "한국어 회의록 작성을 위해 회의 일부에서 확인된 정보만 같은 섹션 구조로 정리한다. "
+            "이 부분만으로 회의 전체를 결론짓지 말고 해당 구간에서 확인된 사실만 적는다."
+        ),
+        "minutes_merge_system": (
+            "여러 구간 회의록 초안을 하나의 일관된 한국어 회의록으로 통합한다. "
+            "중복은 제거하고, 충돌은 시간순으로 정리하며, 위 회의록 필수 섹션 구조를 유지한다."
+        ),
+        "summary_system": (
+            "한국어 회의 요약을 Markdown으로 작성한다. "
+            "필수 섹션: 핵심 요약, 주요 결정, 액션 아이템, 참고 사항."
+        ),
+        "summary_partial_system": "한국어 회의 일부의 핵심 포인트를 간결하게 정리한다.",
+        "summary_merge_system": (
+            "여러 구간 요약을 하나의 일관된 한국어 회의 요약으로 통합한다. "
+            "필수 섹션: 핵심 요약, 주요 결정, 액션 아이템, 참고 사항."
+        ),
+        "chunk_label": "부분 {index}/{total}",
+    },
+    "en": {
+        "cleanup_system": (
+            "Clean up an English meeting transcript without altering meaning. "
+            "Fix punctuation, remove obvious repetitions, keep speaker-by-speaker format."
+        ),
+        "cleanup_user_prefix": "Preserve the speaker-by-speaker structure as you clean the text.",
+        "lexicon_template": (
+            " Prefer the following lexicon when correcting likely STT errors; do not substitute "
+            "words that are not in the lexicon. Lexicon: {terms}"
+        ),
+        "minutes_system": (
+            "Write meeting minutes in Markdown. Required sections: Overview, Attendees / Speakers, "
+            "Key Discussion Points, Decisions, Action Items, Issues & Risks, Topics for Next Meeting."
+        ),
+        "minutes_partial_system": (
+            "These are minutes for one slice of a longer meeting. Use the same section structure "
+            "but only record what is actually confirmed by this slice — do not draw conclusions "
+            "about the meeting as a whole."
+        ),
+        "minutes_merge_system": (
+            "Merge several partial meeting-minutes drafts into one coherent set of English minutes. "
+            "Remove duplicates, resolve conflicts chronologically, and keep the required sections."
+        ),
+        "summary_system": (
+            "Write a meeting summary in Markdown. Required sections: Key Summary, Major Decisions, "
+            "Action Items, Notes."
+        ),
+        "summary_partial_system": "Summarize the key points of one slice of a meeting concisely.",
+        "summary_merge_system": (
+            "Merge several partial summaries into one coherent English meeting summary. "
+            "Required sections: Key Summary, Major Decisions, Action Items, Notes."
+        ),
+        "chunk_label": "Part {index}/{total}",
+    },
+}
+
+
+def _resolve_language(hint: str | None) -> str:
+    if not hint:
+        return "ko"
+    normalized = hint.strip().lower().replace("_", "-")
+    if normalized.startswith(("ko", "korean")):
+        return "ko"
+    if normalized.startswith(("en", "english")):
+        return "en"
+    return "ko"
 
 
 class LLMService(ABC):
+    def __init__(self, app_settings: Settings = settings, language: str | None = None) -> None:
+        self.settings = app_settings
+        self._lang = _resolve_language(language or self.settings.stt_language)
+
     @abstractmethod
+    def _run_prompt(self, system_prompt: str, user_prompt: str) -> str:
+        raise NotImplementedError
+
+    def _prompts(self) -> dict[str, str]:
+        return PROMPTS_BY_LANG[self._lang]
+
+    def _lexicon_clause(self) -> str:
+        terms = self.settings.load_lexicon_terms()
+        if not terms:
+            return ""
+        return self._prompts()["lexicon_template"].format(terms=", ".join(terms))
+
+    def _chunks(self, text: str) -> list[str]:
+        return chunk_by_lines(text, max(2000, self.settings.llm_max_input_chars))
+
+    def _label_chunk(self, index: int, total: int) -> str:
+        return self._prompts()["chunk_label"].format(index=index, total=total)
+
     def cleanup_transcript(self, speaker_transcript: str) -> str:
-        raise NotImplementedError
+        prompts = self._prompts()
+        system_prompt = prompts["cleanup_system"] + self._lexicon_clause()
+        cleaned_parts: list[str] = []
+        for chunk in self._chunks(speaker_transcript):
+            cleaned_parts.append(
+                self._run_prompt(system_prompt, f"{prompts['cleanup_user_prefix']}\n\n{chunk}")
+            )
+        return "\n".join(part.strip() for part in cleaned_parts if part).strip()
 
-    @abstractmethod
     def generate_minutes(self, cleaned_transcript: str) -> str:
-        raise NotImplementedError
+        prompts = self._prompts()
+        chunks = self._chunks(cleaned_transcript)
+        if len(chunks) == 1:
+            return self._run_prompt(prompts["minutes_system"], chunks[0])
 
-    @abstractmethod
-    def generate_summary(self, meeting_minutes: str) -> str:
-        raise NotImplementedError
+        partials: list[str] = []
+        for index, chunk in enumerate(chunks, start=1):
+            partials.append(
+                self._run_prompt(
+                    prompts["minutes_partial_system"],
+                    f"{self._label_chunk(index, len(chunks))}\n\n{chunk}",
+                )
+            )
+        return self._run_prompt(prompts["minutes_merge_system"], "\n\n---\n\n".join(partials))
+
+    def generate_summary(self, cleaned_transcript: str) -> str:
+        prompts = self._prompts()
+        chunks = self._chunks(cleaned_transcript)
+        if len(chunks) == 1:
+            return self._run_prompt(prompts["summary_system"], chunks[0])
+
+        partials: list[str] = []
+        for index, chunk in enumerate(chunks, start=1):
+            partials.append(
+                self._run_prompt(
+                    prompts["summary_partial_system"],
+                    f"{self._label_chunk(index, len(chunks))}\n\n{chunk}",
+                )
+            )
+        return self._run_prompt(prompts["summary_merge_system"], "\n\n---\n\n".join(partials))
 
 
 class MockLLMService(LLMService):
+    def _run_prompt(self, system_prompt: str, user_prompt: str) -> str:
+        return user_prompt
+
     def cleanup_transcript(self, speaker_transcript: str) -> str:
         return speaker_transcript
 
     def generate_minutes(self, cleaned_transcript: str) -> str:
-        return f"""# 회의록
+        if self._lang == "en":
+            return _MOCK_MINUTES_EN
+        return _MOCK_MINUTES_KO
+
+    def generate_summary(self, cleaned_transcript: str) -> str:
+        if self._lang == "en":
+            return _MOCK_SUMMARY_EN
+        return _MOCK_SUMMARY_KO
+
+
+class OpenAICompatibleLLMService(LLMService):
+    def __init__(self, app_settings: Settings = settings, language: str | None = None) -> None:
+        super().__init__(app_settings, language)
+        self.base_url = self.settings.effective_llm_base_url
+        self.model = self.settings.effective_llm_model
+        if not self.base_url:
+            raise RuntimeError("LLM_BASE_URL is required for OpenAI-compatible provider.")
+        if not self.model:
+            raise RuntimeError("LLM_MODEL or VLLM_MODEL is required for OpenAI-compatible provider.")
+
+    def _run_prompt(self, system_prompt: str, user_prompt: str) -> str:
+        headers = {"Content-Type": "application/json"}
+        if self.settings.llm_api_key:
+            headers["Authorization"] = f"Bearer {self.settings.llm_api_key}"
+
+        response = httpx.post(
+            f"{self.base_url.rstrip('/')}/chat/completions",
+            headers=headers,
+            json={
+                "model": self.model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                "temperature": 0.2,
+            },
+            timeout=self.settings.llm_request_timeout_seconds,
+        )
+        response.raise_for_status()
+        data: dict[str, Any] = response.json()
+        return data["choices"][0]["message"]["content"].strip()
+
+
+class OllamaLLMService(LLMService):
+    def __init__(self, app_settings: Settings = settings, language: str | None = None) -> None:
+        super().__init__(app_settings, language)
+        if not self.settings.llm_base_url:
+            raise RuntimeError("LLM_BASE_URL is required for Ollama provider.")
+        if not self.settings.llm_model:
+            raise RuntimeError("LLM_MODEL is required for Ollama provider.")
+
+    def _run_prompt(self, system_prompt: str, user_prompt: str) -> str:
+        response = httpx.post(
+            f"{self.settings.llm_base_url.rstrip('/')}/api/chat",
+            json={
+                "model": self.settings.llm_model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                "stream": False,
+                "options": {"temperature": 0.2},
+            },
+            timeout=self.settings.llm_request_timeout_seconds,
+        )
+        response.raise_for_status()
+        data = response.json()
+        return data["message"]["content"].strip()
+
+
+def get_llm_service(app_settings: Settings = settings, language: str | None = None) -> LLMService:
+    provider = app_settings.llm_provider.lower()
+    if provider == "mock":
+        return MockLLMService(app_settings, language)
+    if provider in {"openai", "openai_compatible", "openai-compatible"}:
+        return OpenAICompatibleLLMService(app_settings, language)
+    if provider == "ollama":
+        return OllamaLLMService(app_settings, language)
+    raise RuntimeError(f"Unsupported LLM_PROVIDER: {app_settings.llm_provider}")
+
+
+_MOCK_MINUTES_KO = """# 회의록
 
 ## 1. 회의 개요
 
@@ -60,8 +277,7 @@ class MockLLMService(LLMService):
 - 실제 provider 전환 결과와 처리 시간 측정
 """
 
-    def generate_summary(self, meeting_minutes: str) -> str:
-        return """# 회의 요약
+_MOCK_SUMMARY_KO = """# 회의 요약
 
 ## 핵심 요약
 
@@ -80,112 +296,56 @@ class MockLLMService(LLMService):
 - 실제 STT/화자분리/LLM 전환은 환경변수와 모델 캐시 설정으로 처리합니다.
 """
 
+_MOCK_MINUTES_EN = """# Meeting Minutes
 
-class OpenAICompatibleLLMService(LLMService):
-    def __init__(self, app_settings: Settings = settings) -> None:
-        self.settings = app_settings
-        self.base_url = self.settings.effective_llm_base_url
-        self.model = self.settings.effective_llm_model
-        if not self.base_url:
-            raise RuntimeError("LLM_BASE_URL is required for OpenAI-compatible provider.")
-        if not self.model:
-            raise RuntimeError("LLM_MODEL or VLLM_MODEL is required for OpenAI-compatible provider.")
+## 1. Overview
 
-    def _chat(self, system_prompt: str, user_prompt: str) -> str:
-        headers = {"Content-Type": "application/json"}
-        if self.settings.llm_api_key:
-            headers["Authorization"] = f"Bearer {self.settings.llm_api_key}"
+- Reviewed progress on the upload-driven meeting-minutes MVP.
 
-        response = httpx.post(
-            f"{self.base_url.rstrip('/')}/chat/completions",
-            headers=headers,
-            json={
-                "model": self.model,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                "temperature": 0.2,
-            },
-            timeout=120.0,
-        )
-        response.raise_for_status()
-        data: dict[str, Any] = response.json()
-        return data["choices"][0]["message"]["content"].strip()
+## 2. Attendees / Speakers
 
-    def cleanup_transcript(self, speaker_transcript: str) -> str:
-        return self._chat(
-            "한국어 회의 대화 스크립트를 의미 왜곡 없이 문장부호와 반복만 정리한다.",
-            f"화자별 발화 형식을 유지해서 정리하세요.\n\n{speaker_transcript}",
-        )
+- SPEAKER_00
+- SPEAKER_01
 
-    def generate_minutes(self, cleaned_transcript: str) -> str:
-        return self._chat(
-            "한국어 회의록을 Markdown으로 작성한다.",
-            (
-                "다음 섹션을 반드시 포함하세요: 회의 개요, 참석자 / 화자, 주요 논의 사항, 결정 사항, "
-                "액션 아이템, 이슈 및 리스크, 다음 회의에서 논의할 사항.\n\n"
-                f"{cleaned_transcript}"
-            ),
-        )
+## 3. Key Discussion Points
 
-    def generate_summary(self, meeting_minutes: str) -> str:
-        return self._chat(
-            "한국어 회의 요약을 Markdown으로 작성한다.",
-            "핵심 요약, 주요 결정, 액션 아이템, 참고 사항 섹션으로 요약하세요.\n\n" + meeting_minutes,
-        )
+- Backend API is complete; frontend integration remains.
+- Upload reliability and result download need verification.
 
+## 4. Decisions
 
-class OllamaLLMService(LLMService):
-    def __init__(self, app_settings: Settings = settings) -> None:
-        self.settings = app_settings
-        if not self.settings.llm_base_url:
-            raise RuntimeError("LLM_BASE_URL is required for Ollama provider.")
-        if not self.settings.llm_model:
-            raise RuntimeError("LLM_MODEL is required for Ollama provider.")
+- Validate the full pipeline against the mock provider first.
 
-    def _chat(self, prompt: str) -> str:
-        response = httpx.post(
-            f"{self.settings.llm_base_url.rstrip('/')}/api/chat",
-            json={
-                "model": self.settings.llm_model,
-                "messages": [{"role": "user", "content": prompt}],
-                "stream": False,
-                "options": {"temperature": 0.2},
-            },
-            timeout=120.0,
-        )
-        response.raise_for_status()
-        data = response.json()
-        return data["message"]["content"].strip()
+## 5. Action Items
 
-    def cleanup_transcript(self, speaker_transcript: str) -> str:
-        return self._chat(
-            "다음 한국어 회의 대화 스크립트를 화자별 형식을 유지하며 정리하세요. "
-            "의미를 왜곡하지 말고 STT 오류, 반복, 문장부호만 보정하세요.\n\n"
-            + speaker_transcript
-        )
+| Owner | Task | Due | Notes |
+|---|---|---|---|
+| SPEAKER_00 | Verify upload reliability and download flow | Next week | Against mock output |
 
-    def generate_minutes(self, cleaned_transcript: str) -> str:
-        return self._chat(
-            "다음 대화로 Markdown 회의록을 작성하세요. 필수 섹션: 회의 개요, 참석자 / 화자, 주요 논의 사항, "
-            "결정 사항, 액션 아이템 표, 이슈 및 리스크, 다음 회의에서 논의할 사항.\n\n"
-            + cleaned_transcript
-        )
+## 6. Issues & Risks
 
-    def generate_summary(self, meeting_minutes: str) -> str:
-        return self._chat(
-            "다음 회의록을 Markdown으로 요약하세요. 필수 섹션: 핵심 요약, 주요 결정, 액션 아이템, 참고 사항.\n\n"
-            + meeting_minutes
-        )
+- Switching to real STT, diarization, and LLM providers requires model and token setup.
 
+## 7. Topics for Next Meeting
 
-def get_llm_service(app_settings: Settings = settings) -> LLMService:
-    provider = app_settings.llm_provider.lower()
-    if provider == "mock":
-        return MockLLMService()
-    if provider in {"openai", "openai_compatible", "openai-compatible"}:
-        return OpenAICompatibleLLMService(app_settings)
-    if provider == "ollama":
-        return OllamaLLMService(app_settings)
-    raise RuntimeError(f"Unsupported LLM_PROVIDER: {app_settings.llm_provider}")
+- Provider switch results and processing-time measurements
+"""
+
+_MOCK_SUMMARY_EN = """# Meeting Summary
+
+## Key Summary
+
+- Validate the end-to-end flow of the upload-driven meeting-minutes MVP.
+
+## Major Decisions
+
+- Default to the mock provider so the dev mode works without GPU or API keys.
+
+## Action Items
+
+- Verify upload reliability, status polling, and the download flow.
+
+## Notes
+
+- Switch real STT / diarization / LLM via env vars and the model cache.
+"""

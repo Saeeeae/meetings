@@ -38,7 +38,7 @@ async def upload_file(file: UploadFile = File(...), db: Session = Depends(get_db
     except Exception as exc:
         job.status = "failed"
         job.current_step = "failed"
-        job.error_message = "Failed to enqueue analysis job."
+        job.error_message = "분석 작업을 큐에 등록하지 못했습니다."
         db.commit()
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=job.error_message) from exc
 

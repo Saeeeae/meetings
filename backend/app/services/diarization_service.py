@@ -61,7 +61,15 @@ class PyannoteDiarizationService(DiarizationService):
             raise RuntimeError("Audio file was not found for diarization")
 
         pipeline = self._load_pipeline()
-        diarization = pipeline(audio_path)
+        diarize_kwargs: dict = {}
+        if self.settings.pyannote_num_speakers is not None:
+            diarize_kwargs["num_speakers"] = self.settings.pyannote_num_speakers
+        else:
+            if self.settings.pyannote_min_speakers is not None:
+                diarize_kwargs["min_speakers"] = self.settings.pyannote_min_speakers
+            if self.settings.pyannote_max_speakers is not None:
+                diarize_kwargs["max_speakers"] = self.settings.pyannote_max_speakers
+        diarization = pipeline(audio_path, **diarize_kwargs)
         segments: list[dict] = []
         for turn, _, speaker in diarization.itertracks(yield_label=True):
             segments.append({"start": float(turn.start), "end": float(turn.end), "speaker": str(speaker)})
