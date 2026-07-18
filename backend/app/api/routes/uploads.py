@@ -1,4 +1,5 @@
 import uuid
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from sqlalchemy.orm import Session
@@ -23,6 +24,7 @@ async def upload_file(file: UploadFile = File(...), db: Session = Depends(get_db
     job = Job(
         id=job_id,
         original_filename=stored_file.original_filename,
+        title=Path(stored_file.original_filename).stem or "제목 없는 노트",
         stored_filename=stored_file.stored_filename,
         file_path=stored_file.file_path,
         status="queued",

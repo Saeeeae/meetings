@@ -15,6 +15,7 @@ configure_logging()
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    settings.validate_runtime_configuration()
     settings.storage_dir.mkdir(parents=True, exist_ok=True)
     settings.models_dir.mkdir(parents=True, exist_ok=True)
     init_db()
@@ -27,7 +28,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,
     allow_credentials=False,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type", "X-API-Key"],
 )
 

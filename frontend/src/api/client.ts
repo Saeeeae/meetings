@@ -7,6 +7,7 @@ export type UploadResponse = {
 export type JobStatus = {
   job_id: string;
   filename: string;
+  title: string;
   status: "queued" | "processing" | "completed" | "failed";
   progress: number;
   current_step: string;
@@ -22,16 +23,32 @@ export type ResultSegment = {
   text: string;
 };
 
+export type NoteMemo = {
+  id: string;
+  time: number;
+  text: string;
+  created_at: string;
+};
+
 export type AnalysisResult = {
   job_id: string;
   status: string;
+  title: string;
   raw_transcript: string;
   speaker_transcript: string;
   cleaned_transcript: string;
   meeting_minutes: string;
   summary: string;
   segments: ResultSegment[];
+  bookmarks: number[];
+  highlights: number[];
+  memos: NoteMemo[];
+  transcript_edited_at: string | null;
 };
+
+export type ResultUpdate = Partial<
+  Pick<AnalysisResult, "title" | "segments" | "bookmarks" | "highlights" | "memos">
+>;
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
 const API_KEY = import.meta.env.VITE_API_KEY ?? "";
@@ -136,6 +153,25 @@ export async function retryJob(jobId: string): Promise<JobStatus> {
 export async function fetchResult(jobId: string): Promise<AnalysisResult> {
   const response = await fetch(`${API_BASE_URL}/api/results/${jobId}`, { headers: authHeaders() });
   return parseResponse<AnalysisResult>(response);
+}
+
+export async function updateResult(jobId: string, update: ResultUpdate): Promise<AnalysisResult> {
+  const response = await fetch(`${API_BASE_URL}/api/results/${jobId}`, {
+    method: "PATCH",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify(update),
+  });
+  return parseResponse<AnalysisResult>(response);
+}
+
+export async function deleteJob(jobId: string): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/api/jobs/${jobId}`, {
+    method: "DELETE",
+    headers: authHeaders(),
+  });
+  if (!response.ok) {
+    await parseResponse(response);
+  }
 }
 
 export function downloadUrl(jobId: string, type: "minutes" | "summary" | "transcript" | "cleaned_transcript" | "json") {

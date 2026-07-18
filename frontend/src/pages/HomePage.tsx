@@ -53,6 +53,28 @@ export function HomePage() {
     return recentJobs;
   }, []);
 
+  const handleResultUpdated = useCallback((nextResult: AnalysisResult) => {
+    setResult(nextResult);
+    setJob((current) => current ? { ...current, title: nextResult.title } : current);
+    setJobs((current) => current.map((item) => (
+      item.job_id === nextResult.job_id ? { ...item, title: nextResult.title } : item
+    )));
+  }, []);
+
+  const handleDeleted = useCallback(async (deletedJobId: string) => {
+    setJob(null);
+    setResult(null);
+    setError(null);
+    try {
+      const remainingJobs = (await refreshJobs()).filter((item) => item.job_id !== deletedJobId);
+      if (remainingJobs.length > 0) {
+        await loadJob(remainingJobs[0]);
+      }
+    } catch (deleteError) {
+      setError(deleteError instanceof Error ? deleteError.message : "노트 목록을 새로고침하지 못했습니다.");
+    }
+  }, [loadJob, refreshJobs]);
+
   useEffect(() => {
     let cancelled = false;
     const loadRecent = async () => {
@@ -218,7 +240,7 @@ export function HomePage() {
           </button>
           <div className="workspace-heading">
             <span>내 음성 노트</span>
-            <strong>{job?.filename?.replace(/\.[^/.]+$/, "") ?? "새 노트를 시작해보세요"}</strong>
+            <strong>{job?.title ?? "새 노트를 시작해보세요"}</strong>
           </div>
           <button className="topbar-new-button" type="button" onClick={() => setIsUploadOpen(true)}>
             <Plus size={17} />
@@ -249,7 +271,12 @@ export function HomePage() {
               </button>
             </section>
           ) : result ? (
-            <ResultPage result={result} job={job} />
+            <ResultPage
+              result={result}
+              job={job}
+              onResultUpdated={handleResultUpdated}
+              onDeleted={(deletedJobId) => void handleDeleted(deletedJobId)}
+            />
           ) : (
             <JobStatus job={job} onRetry={(next) => { setJob(next); setResult(null); setError(null); }} />
           )}

@@ -12,10 +12,6 @@ type Props = {
   onClose: () => void;
 };
 
-function noteTitle(filename: string) {
-  return filename.replace(/\.[^/.]+$/, "") || "제목 없는 노트";
-}
-
 function formatNoteDate(value: string) {
   const date = new Date(value);
   const today = new Date();
@@ -43,7 +39,7 @@ export function NoteSidebar({
 }: Props) {
   const normalizedQuery = searchQuery.trim().toLowerCase();
   const visibleJobs = normalizedQuery
-    ? jobs.filter((job) => job.filename.toLowerCase().includes(normalizedQuery))
+    ? jobs.filter((job) => job.title.toLowerCase().includes(normalizedQuery))
     : jobs;
 
   return (
@@ -94,7 +90,7 @@ export function NoteSidebar({
                 <FileAudio2 size={17} />
               </span>
               <span className="note-list-copy">
-                <strong>{noteTitle(job.filename)}</strong>
+                <strong>{job.title}</strong>
                 <span>{formatNoteDate(job.created_at)}</span>
               </span>
               <span className={`note-status status-${job.status}`}>

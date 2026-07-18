@@ -55,6 +55,7 @@ class Settings(BaseSettings):
 
     gpu_stage_subprocess: bool = True
     gpu_stage_timeout_seconds: int = 7200
+    recover_interrupted_jobs: bool = True
 
     vllm_on_demand: bool = False
     vllm_model: str | None = None
@@ -195,6 +196,39 @@ class Settings(BaseSettings):
         mapped_terms = {target.casefold() for target in corrections.values()}
         entries.extend(term for term in self.load_lexicon_terms() if term.casefold() not in mapped_terms)
         return entries
+
+    def validate_runtime_configuration(self) -> None:
+        if self.app_env.strip().lower() != "production":
+            return
+
+        errors: list[str] = []
+        if not self.api_key:
+            errors.append("API_KEY is required")
+        mock_providers = [
+            name
+            for name, value in (
+                ("STT_PROVIDER", self.stt_provider),
+                ("DIARIZATION_PROVIDER", self.diarization_provider),
+                ("LLM_PROVIDER", self.llm_provider),
+            )
+            if value.strip().lower() == "mock"
+        ]
+        if mock_providers:
+            errors.append(f"mock providers are not allowed: {', '.join(mock_providers)}")
+        unsafe_origins = [
+            origin
+            for origin in self.cors_origin_list
+            if (
+                origin == "*"
+                or "localhost" in origin
+                or "127.0.0.1" in origin
+                or not origin.lower().startswith("https://")
+            )
+        ]
+        if unsafe_origins:
+            errors.append(f"production CORS_ORIGINS must use deployed HTTPS origins: {', '.join(unsafe_origins)}")
+        if errors:
+            raise RuntimeError("Unsafe production configuration: " + "; ".join(errors))
 
     @property
     def vllm_health_url(self) -> str:

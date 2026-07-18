@@ -4,7 +4,7 @@ import logging
 from pathlib import Path
 
 import redis.asyncio as redis_async
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.orm import Session
 
@@ -36,6 +36,35 @@ def get_job(job_id: str, db: Session = Depends(get_db)) -> JobStatusResponse:
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
     return job_to_status_response(job)
+
+
+@router.delete("/jobs/{job_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_job(job_id: str, db: Session = Depends(get_db)) -> Response:
+    job = db.get(Job, job_id)
+    if job is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+    if job.status in {"queued", "processing"}:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="처리 중인 노트는 삭제할 수 없습니다.",
+        )
+
+    artifact_paths = {
+        Path(job.file_path) if job.file_path else None,
+        settings.storage_dir / "processed" / f"{job_id}.wav",
+    }
+    db.delete(job)
+    db.commit()
+
+    for artifact_path in artifact_paths:
+        if artifact_path is None:
+            continue
+        try:
+            artifact_path.unlink(missing_ok=True)
+        except OSError as exc:
+            logger.warning("Failed to delete artifact for job %s: %s", job_id, exc)
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 def _job_event_payload(job: Job) -> str:

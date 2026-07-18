@@ -8,6 +8,8 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
+settings.validate_runtime_configuration()
+
 
 celery_app = Celery(
     "meeting_minutes_ai",
@@ -32,23 +34,32 @@ celery_app.conf.update(
 def _on_worker_ready(**_: object) -> None:
     from app.core.database import SessionLocal, init_db
     from app.models.job import Job
+    from app.workers.tasks import process_job
 
     init_db()
 
     db = SessionLocal()
     try:
-        stale = db.query(Job).filter(Job.status == "processing").all()
-        if not stale:
+        if not settings.recover_interrupted_jobs:
             return
-        logger.warning("Recovering %d orphan job(s) left in 'processing' state.", len(stale))
-        for job in stale:
-            job.status = "failed"
-            job.current_step = "failed"
-            job.progress = min(job.progress or 0, 99)
-            job.error_message = "워커가 재시작되어 분석이 중단되었습니다. 다시 업로드해주세요."
+
+        recoverable = db.query(Job).filter(Job.status.in_(["queued", "processing"])).all()
+        if not recoverable:
+            return
+        logger.warning("Requeueing %d interrupted or queued job(s).", len(recoverable))
+        job_ids: list[str] = []
+        for job in recoverable:
+            job.status = "queued"
+            job.current_step = "uploaded"
+            job.progress = 5
+            job.error_message = None
+            job_ids.append(job.id)
         db.commit()
     finally:
         db.close()
+
+    for job_id in job_ids:
+        process_job.delay(job_id)
 
 
 @worker_shutdown.connect

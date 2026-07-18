@@ -77,6 +77,7 @@ class JobsApiTests(unittest.TestCase):
         payload = response.json()
         self.assertEqual([job["job_id"] for job in payload], ["newer", "older"])
         self.assertEqual(payload[0]["filename"], "오늘 회의.wav")
+        self.assertEqual(payload[0]["title"], "오늘 회의")
 
 
 if __name__ == "__main__":
