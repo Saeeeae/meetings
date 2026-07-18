@@ -8,6 +8,9 @@ services:
     environment:
       NVIDIA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-all}
       CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-0}
+      # on-premise 기본값: vLLM 익명 사용 통계 전송 차단
+      VLLM_NO_USAGE_STATS: "1"
+      DO_NOT_TRACK: "1"
     deploy:
       resources:
         reservations:
