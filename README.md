@@ -565,6 +565,55 @@ LLM_BASE_URL=http://host.docker.internal:8001/v1
 LLM_MODEL=Qwen/Qwen2.5-7B-Instruct
 ```
 
+## 폐쇄망(Air-gap) / Fully On-Premise 설치
+
+이 서비스는 운영 중 외부 네트워크 호출이 없습니다. STT(Qwen ASR), 화자 분리(pyannote), LLM(on-demand vLLM)을 모두 로컬 GPU에서 실행하면 회의 음성이 서버 밖으로 나가지 않습니다. 인터넷이 필요한 것은 최초 준비 단계뿐입니다.
+
+### 준비 (인터넷 가능한 환경에서 1회)
+
+1. Docker 이미지 빌드 또는 내부 레지스트리에 미러링
+2. 모델 다운로드: `python backend/scripts/download_models.py` 실행 후 `models/` 폴더 생성 확인
+3. pyannote를 쓴다면 **화자 분리를 한 번 실제로 실행**해 `models/huggingface` 캐시에 하위 모델(segmentation, embedding)까지 채운 뒤 반입하세요. 파이프라인 repo만 반입하면 오프라인에서 로드가 실패할 수 있습니다.
+4. `models/` 폴더 전체(HF 캐시 포함)를 폐쇄망 서버로 반입
+
+### 폐쇄망 서버 설정
+
+`.env`에 오프라인 모드를 활성화합니다.
+
+```env
+HF_HUB_OFFLINE=1
+TRANSFORMERS_OFFLINE=1
+```
+
+vLLM 내부 모델은 이름 또는 반입한 절대 경로로 지정할 수 있습니다.
+
+```env
+LLM_PROVIDER=openai_compatible
+VLLM_ON_DEMAND=true
+# 방법 1: models/vllm/ 아래 반입한 Hugging Face 모델명
+VLLM_MODEL=Qwen/Qwen3.6-35B-A3B-FP8
+# 방법 2: 임의 위치에 반입한 내부 모델의 컨테이너 내 절대 경로
+# VLLM_MODEL=/models/internal/my-company-llm
+```
+
+### Qwen3.6-35B-A3B 사용 시 (L40S 48GB 1장 기준)
+
+- BF16 원본(약 70GB)은 48GB GPU에 올라가지 않으므로 **FP8 변형**(`Qwen/Qwen3.6-35B-A3B-FP8`, 가중치 약 35GB)을 사용합니다. MoE 구조(활성 3B)라 추론 속도는 소형 모델 수준입니다.
+- Qwen3.6 아키텍처는 **vLLM 0.17 이상**이 필요합니다 (`requirements-vllm.txt`에 반영됨). 기존 GPU 이미지를 쓰고 있었다면 `--build`로 재빌드하세요.
+- 권장 설정:
+
+```env
+VLLM_MODEL=Qwen/Qwen3.6-35B-A3B-FP8
+# 48GB에서 FP8 가중치를 제외한 KV cache 여유에 맞춘 컨텍스트 상한
+VLLM_MAX_MODEL_LEN=32768
+# 사고(thinking) 출력을 응답 본문에서 분리 — 없으면 회의록에 <think> 내용이 섞임
+VLLM_EXTRA_ARGS=--reasoning-parser qwen3
+```
+
+vLLM의 익명 사용 통계 전송은 `docker-compose.gpu.yml`에서 기본 차단됩니다(`VLLM_NO_USAGE_STATS=1`).
+
+`LLM_BASE_URL`을 외부 API로 지정하면 그 순간부터 온프레미스가 아니게 되므로, 폐쇄망에서는 비워 두거나 내부 endpoint만 사용하세요.
+
 ## GPU 사용과 Scale-out
 
 단일 GPU 기본 실행:
