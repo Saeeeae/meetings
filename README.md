@@ -262,6 +262,7 @@ docker compose -f docker-compose.yml -f docker-compose.gpu.yml logs -f worker
 | `DIARIZATION_PROVIDER` | 화자 분리 방식 | 처음 테스트는 `mock`, 실제 화자분리는 `pyannote` |
 | `LLM_PROVIDER` | 회의록 생성 LLM 방식 | 처음 테스트는 `mock` |
 | `VLLM_ON_DEMAND` | 작업 중 vLLM 자동 실행 여부 | 처음 테스트는 `false` |
+| `JOB_TIME_LIMIT_SECONDS` | job 전체 처리 시간 상한. Redis visibility timeout 기준값 | `21600` |
 | `RECOVER_INTERRUPTED_JOBS` | worker 재시작 시 중단 작업 자동 재등록 | `true` |
 | `HUGGINGFACE_TOKEN` | Hugging Face 접근 token | pyannote 사용 시 필요 |
 

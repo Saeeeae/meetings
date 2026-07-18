@@ -57,6 +57,11 @@ class OnDemandVLLM:
             return self
 
         if self._health_check():
+            if not self._serves_openai_models():
+                raise RuntimeError(
+                    f"Port {self.settings.vllm_port} is already serving something that is not an "
+                    "OpenAI-compatible LLM server. Stop that service or change VLLM_PORT."
+                )
             if self.settings.vllm_reuse_existing or self.settings.vllm_warm_keep:
                 logger.info("Existing vLLM server is healthy; reusing it for this job.")
                 return self
@@ -83,7 +88,13 @@ class OnDemandVLLM:
             ) from exc
 
         self._started_by_manager = True
-        self._wait_until_ready()
+        try:
+            self._wait_until_ready()
+        except BaseException:
+            # __exit__ is never called when __enter__ raises, so the spawned
+            # server must be reaped here or it keeps holding GPU memory.
+            self._terminate_process()
+            raise
 
         if self.settings.vllm_warm_keep:
             self._promote_to_warm()
@@ -98,13 +109,20 @@ class OnDemandVLLM:
             return
 
         logger.info("Stopping on-demand vLLM server.")
-        self.process.terminate()
+        self._terminate_process()
+
+    def _terminate_process(self) -> None:
+        if self.process is None:
+            self._close_log()
+            return
         try:
-            self.process.wait(timeout=self.settings.vllm_shutdown_timeout_seconds)
-        except subprocess.TimeoutExpired:
-            logger.warning("vLLM did not stop in time; killing process.")
-            self.process.kill()
-            self.process.wait(timeout=10)
+            self.process.terminate()
+            try:
+                self.process.wait(timeout=self.settings.vllm_shutdown_timeout_seconds)
+            except subprocess.TimeoutExpired:
+                logger.warning("vLLM did not stop in time; killing process.")
+                self.process.kill()
+                self.process.wait(timeout=10)
         finally:
             self._close_log()
 
@@ -193,3 +211,20 @@ class OnDemandVLLM:
             return response.status_code < 500
         except httpx.HTTPError:
             return False
+
+    def _serves_openai_models(self) -> bool:
+        base_url = (
+            self.settings.effective_llm_base_url
+            or f"http://{self.settings.vllm_host}:{self.settings.vllm_port}/v1"
+        ).rstrip("/")
+        headers = {}
+        if self.settings.llm_api_key:
+            headers["Authorization"] = f"Bearer {self.settings.llm_api_key}"
+        try:
+            response = httpx.get(f"{base_url}/models", headers=headers, timeout=5.0)
+            if response.status_code != 200:
+                return False
+            payload = response.json()
+        except (httpx.HTTPError, ValueError):
+            return False
+        return isinstance(payload, dict) and isinstance(payload.get("data"), list)

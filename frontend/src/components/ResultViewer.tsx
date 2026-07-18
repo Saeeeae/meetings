@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, useMemo, useRef, useState } from "react";
 import {
   AlertCircle,
   Bookmark,
@@ -11,11 +11,7 @@ import {
   ListFilter,
   LoaderCircle,
   MessageSquarePlus,
-  Pause,
   Pencil,
-  Play,
-  RotateCcw,
-  RotateCw,
   Search,
   Sparkles,
   StickyNote,
@@ -35,6 +31,10 @@ import {
   ResultUpdate,
   updateResult,
 } from "../api/client";
+import { useAudioPlayer } from "../hooks/useAudioPlayer";
+import { formatTime } from "../utils/format";
+import { AudioDock } from "./AudioDock";
+import { TranscriptSegment } from "./TranscriptSegment";
 
 type Props = {
   result: AnalysisResult;
@@ -48,31 +48,7 @@ type SaveStatus = "idle" | "saving" | "saved" | "error" | "deleting";
 
 const SPEAKER_TONES = ["tone-mint", "tone-coral", "tone-violet", "tone-blue", "tone-amber", "tone-rose"];
 
-function formatTime(seconds: number): string {
-  const total = Math.max(0, Math.floor(seconds || 0));
-  const h = Math.floor(total / 3600);
-  const m = Math.floor((total % 3600) / 60);
-  const s = total % 60;
-  if (h > 0) return `${h.toString().padStart(2, "0")}:${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
-  return `${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
-}
-
-function HighlightedText({ text, query }: { text: string; query: string }) {
-  const normalizedQuery = query.trim();
-  if (!normalizedQuery) return <>{text}</>;
-  const escaped = normalizedQuery.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const parts = text.split(new RegExp(`(${escaped})`, "gi"));
-  return (
-    <>
-      {parts.map((part, index) =>
-        part.toLowerCase() === normalizedQuery.toLowerCase() ? <mark key={`${part}-${index}`}>{part}</mark> : part,
-      )}
-    </>
-  );
-}
-
 export function ResultViewer({ result, job, onResultUpdated, onDeleted }: Props) {
-  const audioRef = useRef<HTMLAudioElement | null>(null);
   const memoInputRef = useRef<HTMLTextAreaElement | null>(null);
   const saveRequestRef = useRef(0);
   const [title, setTitle] = useState(result.title);
@@ -90,14 +66,13 @@ export function ResultViewer({ result, job, onResultUpdated, onDeleted }: Props)
   const [memoTime, setMemoTime] = useState(0);
   const [editingMemoId, setEditingMemoId] = useState<string | null>(null);
   const [memoEditDraft, setMemoEditDraft] = useState("");
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [currentTime, setCurrentTime] = useState(0);
-  const [duration, setDuration] = useState(0);
-  const [playbackRate, setPlaybackRate] = useState(1);
-  const [audioAvailable, setAudioAvailable] = useState(true);
   const [showDownloads, setShowDownloads] = useState(false);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
   const [saveError, setSaveError] = useState<string | null>(null);
+
+  const fallbackDuration = segments[segments.length - 1]?.end ?? 0;
+  const player = useAudioPlayer(fallbackDuration);
+  const { currentTime, visibleDuration, seekTo } = player;
 
   const persistPatch = async (patch: ResultUpdate) => {
     const requestId = ++saveRequestRef.current;
@@ -134,8 +109,6 @@ export function ResultViewer({ result, job, onResultUpdated, onDeleted }: Props)
     [speakers],
   );
   const speakerTone = (speaker: string) => SPEAKER_TONES[Math.max(0, speakers.indexOf(speaker)) % SPEAKER_TONES.length];
-  const fallbackDuration = segments[segments.length - 1]?.end ?? 0;
-  const visibleDuration = duration || fallbackDuration;
 
   const filteredSegments = useMemo(() => {
     const normalizedQuery = searchQuery.trim().toLowerCase();
@@ -153,30 +126,6 @@ export function ResultViewer({ result, job, onResultUpdated, onDeleted }: Props)
     const indices = Array.from(new Set([...bookmarks, ...highlights])).sort((a, b) => a - b);
     return indices.map((index) => ({ index, segment: segments[index] })).filter((item) => item.segment);
   }, [bookmarks, highlights, segments]);
-
-  const seekTo = (seconds: number, autoplay = true) => {
-    const audio = audioRef.current;
-    if (!audio) return;
-    audio.currentTime = Math.max(0, seconds);
-    setCurrentTime(audio.currentTime);
-    if (autoplay) void audio.play().catch(() => setIsPlaying(false));
-  };
-
-  const togglePlay = () => {
-    const audio = audioRef.current;
-    if (!audio) return;
-    if (audio.paused) void audio.play().catch(() => setIsPlaying(false));
-    else audio.pause();
-  };
-
-  const skip = (seconds: number) => seekTo(Math.min(visibleDuration, Math.max(0, currentTime + seconds)), false);
-
-  const cyclePlaybackRate = () => {
-    const rates = [1, 1.25, 1.5, 2];
-    const next = rates[(rates.indexOf(playbackRate) + 1) % rates.length];
-    setPlaybackRate(next);
-    if (audioRef.current) audioRef.current.playbackRate = next;
-  };
 
   const saveTitle = (event: FormEvent) => {
     event.preventDefault();
@@ -486,130 +435,7 @@ export function ResultViewer({ result, job, onResultUpdated, onDeleted }: Props)
         </aside>
       </div>
 
-      <audio
-        ref={audioRef}
-        src={audioUrl(result.job_id)}
-        preload="metadata"
-        onLoadedMetadata={(event) => setDuration(event.currentTarget.duration)}
-        onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)}
-        onPlay={() => setIsPlaying(true)}
-        onPause={() => setIsPlaying(false)}
-        onEnded={() => setIsPlaying(false)}
-        onError={() => setAudioAvailable(false)}
-      />
-
-      <div className="audio-dock">
-        <div className="audio-controls">
-          <button type="button" className="skip-button" onClick={() => skip(-10)} aria-label="10초 뒤로"><RotateCcw size={18} /><span>10</span></button>
-          <button type="button" className="play-button" onClick={togglePlay} disabled={!audioAvailable} aria-label={isPlaying ? "일시정지" : "재생"}>{isPlaying ? <Pause size={21} fill="currentColor" /> : <Play size={21} fill="currentColor" />}</button>
-          <button type="button" className="skip-button" onClick={() => skip(10)} aria-label="10초 앞으로"><RotateCw size={18} /><span>10</span></button>
-        </div>
-        <span className="player-time">{formatTime(currentTime)}</span>
-        <input
-          className="player-range"
-          type="range"
-          min="0"
-          max={Math.max(1, visibleDuration)}
-          step="0.1"
-          value={Math.min(currentTime, Math.max(1, visibleDuration))}
-          onChange={(event) => seekTo(Number(event.target.value), false)}
-          aria-label="재생 위치"
-        />
-        <span className="player-time">{formatTime(visibleDuration)}</span>
-        <button className="rate-button" type="button" onClick={cyclePlaybackRate}>{playbackRate}x</button>
-        {!audioAvailable ? <span className="audio-unavailable">오디오 만료</span> : null}
-      </div>
+      <AudioDock src={audioUrl(result.job_id)} player={player} />
     </section>
-  );
-}
-
-function TranscriptSegment({
-  segment,
-  label,
-  tone,
-  query,
-  isBookmarked,
-  isHighlighted,
-  onSeek,
-  onBookmark,
-  onHighlight,
-  onMemo,
-  onEditText,
-  onRenameSpeaker,
-}: {
-  segment: ResultSegment;
-  label: string;
-  tone: string;
-  query: string;
-  isBookmarked: boolean;
-  isHighlighted: boolean;
-  onSeek: () => void;
-  onBookmark: () => void;
-  onHighlight: () => void;
-  onMemo: () => void;
-  onEditText: (text: string) => void;
-  onRenameSpeaker: (name: string) => void;
-}) {
-  const [isEditingText, setIsEditingText] = useState(false);
-  const [textDraft, setTextDraft] = useState(segment.text);
-  const [isEditingSpeaker, setIsEditingSpeaker] = useState(false);
-  const [speakerDraft, setSpeakerDraft] = useState(label);
-
-  useEffect(() => setTextDraft(segment.text), [segment.text]);
-  useEffect(() => setSpeakerDraft(label), [label]);
-
-  const saveText = () => {
-    const text = textDraft.trim();
-    if (!text) return;
-    onEditText(text);
-    setIsEditingText(false);
-  };
-
-  const saveSpeaker = (event: FormEvent) => {
-    event.preventDefault();
-    const name = speakerDraft.trim();
-    if (!name) return;
-    onRenameSpeaker(name);
-    setIsEditingSpeaker(false);
-  };
-
-  return (
-    <article className={`transcript-segment ${isHighlighted ? "is-highlighted" : ""}`}>
-      <div className={`speaker-avatar ${tone}`}>{label.slice(-1)}</div>
-      <div className="segment-body">
-        <div className="segment-meta">
-          {isEditingSpeaker ? (
-            <form className="speaker-inline-editor" onSubmit={saveSpeaker}>
-              <input value={speakerDraft} onChange={(event) => setSpeakerDraft(event.target.value)} autoFocus maxLength={100} />
-              <button type="submit" aria-label="참석자 이름 저장"><Check size={13} /></button>
-              <button type="button" onClick={() => setIsEditingSpeaker(false)} aria-label="참석자 이름 편집 취소"><X size={13} /></button>
-            </form>
-          ) : (
-            <button className="speaker-name-button" type="button" onClick={() => setIsEditingSpeaker(true)}>
-              <strong>{label}</strong>
-              <Pencil size={11} />
-            </button>
-          )}
-          <button type="button" onClick={onSeek}>{formatTime(segment.start)}</button>
-        </div>
-        {isEditingText ? (
-          <div className="segment-text-editor">
-            <textarea value={textDraft} onChange={(event) => setTextDraft(event.target.value)} autoFocus />
-            <div>
-              <button type="button" onClick={saveText} disabled={!textDraft.trim()}><Check size={14} /> 저장</button>
-              <button type="button" onClick={() => { setTextDraft(segment.text); setIsEditingText(false); }}><X size={14} /> 취소</button>
-            </div>
-          </div>
-        ) : (
-          <p><HighlightedText text={segment.text} query={query} /></p>
-        )}
-      </div>
-      <div className="segment-actions">
-        <button type="button" onClick={() => setIsEditingText(true)} aria-label="발화문 편집"><Pencil size={16} /></button>
-        <button type="button" className={isBookmarked ? "is-active" : ""} onClick={onBookmark} aria-label="북마크"><Bookmark size={16} fill={isBookmarked ? "currentColor" : "none"} /></button>
-        <button type="button" className={isHighlighted ? "is-active" : ""} onClick={onHighlight} aria-label="하이라이트"><Highlighter size={16} /></button>
-        <button type="button" onClick={onMemo} aria-label="메모 추가"><MessageSquarePlus size={16} /></button>
-      </div>
-    </article>
   );
 }

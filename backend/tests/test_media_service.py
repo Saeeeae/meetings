@@ -4,6 +4,7 @@ import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import MagicMock, patch
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BACKEND_ROOT))
@@ -44,6 +45,24 @@ class MediaFilterChainTests(unittest.TestCase):
             audio_denoise=False,
         )._build_filter_chain()
         self.assertEqual(chain, "highpass=f=120")
+
+
+class AudioStreamProbeTests(unittest.TestCase):
+    def test_audio_stream_detected(self) -> None:
+        completed = MagicMock(returncode=0, stdout="audio\n")
+        with patch("app.services.media_service.subprocess.run", return_value=completed):
+            self.assertTrue(_service().has_audio_stream("/tmp/meeting.wav"))
+
+    def test_no_audio_stream_rejected(self) -> None:
+        completed = MagicMock(returncode=0, stdout="")
+        with patch("app.services.media_service.subprocess.run", return_value=completed):
+            self.assertFalse(_service().has_audio_stream("/tmp/not-audio.pdf"))
+
+    def test_missing_ffprobe_skips_validation(self) -> None:
+        with patch(
+            "app.services.media_service.subprocess.run", side_effect=FileNotFoundError
+        ):
+            self.assertTrue(_service().has_audio_stream("/tmp/meeting.wav"))
 
 
 if __name__ == "__main__":

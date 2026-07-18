@@ -27,6 +27,19 @@ celery_app.conf.update(
     task_track_started=True,
     task_acks_late=True,
     task_reject_on_worker_lost=True,
+    # acks_late + Redis: an unacked task is redelivered after visibility_timeout,
+    # so it must exceed the longest possible job or duplicates get queued mid-run.
+    broker_transport_options={
+        "visibility_timeout": settings.job_time_limit_seconds + 3600,
+    },
+    task_time_limit=settings.job_time_limit_seconds,
+    task_soft_time_limit=max(60, settings.job_time_limit_seconds - 300),
+    beat_schedule={
+        "purge-expired-artifacts": {
+            "task": "app.workers.tasks.purge_expired_artifacts",
+            "schedule": 6 * 3600.0,
+        },
+    },
 )
 
 
