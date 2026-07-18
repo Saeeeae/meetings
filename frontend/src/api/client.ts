@@ -6,6 +6,7 @@ export type UploadResponse = {
 
 export type JobStatus = {
   job_id: string;
+  filename: string;
   status: "queued" | "processing" | "completed" | "failed";
   progress: number;
   current_step: string;
@@ -117,6 +118,11 @@ export function uploadRecording(file: File, onProgress?: UploadProgressCallback)
 export async function fetchJob(jobId: string): Promise<JobStatus> {
   const response = await fetch(`${API_BASE_URL}/api/jobs/${jobId}`, { headers: authHeaders() });
   return parseResponse<JobStatus>(response);
+}
+
+export async function fetchJobs(limit = 50): Promise<JobStatus[]> {
+  const response = await fetch(`${API_BASE_URL}/api/jobs?limit=${limit}`, { headers: authHeaders() });
+  return parseResponse<JobStatus[]>(response);
 }
 
 export async function retryJob(jobId: string): Promise<JobStatus> {

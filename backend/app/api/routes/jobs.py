@@ -4,7 +4,7 @@ import logging
 from pathlib import Path
 
 import redis.asyncio as redis_async
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.orm import Session
 
@@ -19,6 +19,15 @@ router = APIRouter(prefix="/api", tags=["jobs"])
 
 SSE_HEARTBEAT_SECONDS = 15
 SSE_MAX_DURATION_SECONDS = 60 * 60
+
+
+@router.get("/jobs", response_model=list[JobStatusResponse])
+def list_jobs(
+    limit: int = Query(50, ge=1, le=100),
+    db: Session = Depends(get_db),
+) -> list[JobStatusResponse]:
+    jobs = db.query(Job).order_by(Job.created_at.desc()).limit(limit).all()
+    return [job_to_status_response(job) for job in jobs]
 
 
 @router.get("/jobs/{job_id}", response_model=JobStatusResponse)

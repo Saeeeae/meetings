@@ -13,6 +13,7 @@ class JobStatusResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     job_id: str
+    filename: str
     status: str
     progress: int
     current_step: str
@@ -24,6 +25,7 @@ class JobStatusResponse(BaseModel):
 def job_to_status_response(job) -> JobStatusResponse:
     return JobStatusResponse(
         job_id=job.id,
+        filename=job.original_filename,
         status=job.status,
         progress=job.progress,
         current_step=job.current_step,
