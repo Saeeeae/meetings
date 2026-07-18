@@ -5,6 +5,8 @@ from urllib.parse import urlparse, urlunparse
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.core.lexicon import load_lexicon
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
@@ -28,7 +30,7 @@ class Settings(BaseSettings):
     stt_provider: str = "qwen_asr"
     stt_language: str = "ko"
     stt_context: str | None = None
-    lexicon_path: Path | None = None
+    lexicon_path: Path | None = Path("config/stt_dictionary.json")
     qwen_asr_model: str | None = "Qwen/Qwen3-ASR-1.7B"
     qwen_asr_forced_aligner_model: str | None = "Qwen/Qwen3-ForcedAligner-0.6B"
     qwen_asr_dtype: str | None = "bfloat16"
@@ -174,18 +176,25 @@ class Settings(BaseSettings):
                 term = raw.strip()
                 if term:
                     terms.append(term)
-        if self.lexicon_path and self.lexicon_path.is_file():
-            for line in self.lexicon_path.read_text(encoding="utf-8").splitlines():
-                term = line.strip()
-                if term and not term.startswith("#"):
-                    terms.append(term)
+        terms.extend(load_lexicon(self.lexicon_path).terms)
         seen: set[str] = set()
         unique: list[str] = []
         for term in terms:
-            if term not in seen:
-                seen.add(term)
+            normalized = term.casefold()
+            if normalized not in seen:
+                seen.add(normalized)
                 unique.append(term)
         return unique
+
+    def load_lexicon_corrections(self) -> dict[str, str]:
+        return load_lexicon(self.lexicon_path).corrections
+
+    def load_lexicon_prompt_entries(self) -> list[str]:
+        corrections = self.load_lexicon_corrections()
+        entries = [f"{source} -> {target}" for source, target in corrections.items()]
+        mapped_terms = {target.casefold() for target in corrections.values()}
+        entries.extend(term for term in self.load_lexicon_terms() if term.casefold() not in mapped_terms)
+        return entries
 
     @property
     def vllm_health_url(self) -> str:

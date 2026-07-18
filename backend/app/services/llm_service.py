@@ -99,10 +99,10 @@ class LLMService(ABC):
         return PROMPTS_BY_LANG[self._lang]
 
     def _lexicon_clause(self) -> str:
-        terms = self.settings.load_lexicon_terms()
-        if not terms:
+        entries = self.settings.load_lexicon_prompt_entries()
+        if not entries:
             return ""
-        return self._prompts()["lexicon_template"].format(terms=", ".join(terms))
+        return self._prompts()["lexicon_template"].format(terms=", ".join(entries))
 
     def _chunks(self, text: str) -> list[str]:
         return chunk_by_lines(text, max(2000, self.settings.llm_max_input_chars))

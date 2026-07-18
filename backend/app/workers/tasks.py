@@ -12,6 +12,7 @@ from app.models.job import Job
 from app.models.result import Result
 from app.services.alignment_service import AlignmentService
 from app.services.diarization_service import get_diarization_service
+from app.services.lexicon_service import LexiconCorrectionService
 from app.services.llm_service import get_llm_service
 from app.services.media_service import MediaService
 from app.services.minutes_service import MinutesService
@@ -161,6 +162,10 @@ def process_job(job_id: str) -> None:
 
         _set_job_step(db, job, "stt")
         stt_result = _run_stt(audio_path)
+        lexicon_service = LexiconCorrectionService(settings.load_lexicon_corrections())
+        if lexicon_service.enabled:
+            stt_result = lexicon_service.correct_stt_result(stt_result)
+            logger.info("Applied the STT correction dictionary to job %s.", job.id)
 
         _set_job_step(db, job, "diarization")
         speaker_segments = _run_diarization(audio_path)
@@ -171,6 +176,8 @@ def process_job(job_id: str) -> None:
             speaker_segments,
             words=stt_result.get("words", []),
         )
+        if lexicon_service.enabled:
+            aligned_segments = lexicon_service.correct_segments(aligned_segments)
 
         minutes_service = MinutesService()
         raw_transcript = minutes_service.build_raw_transcript(stt_result)
