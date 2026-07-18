@@ -197,7 +197,16 @@ export function HomePage() {
               : item
           )));
           if (payload.status === "completed" || payload.status === "failed") {
-            void fetchJob(jobId).then(applyEvent).catch(() => undefined);
+            const terminalStatus = payload.status;
+            void fetchJob(jobId)
+              .then(applyEvent)
+              .catch(() => {
+                // Still load the result from the SSE payload; otherwise the
+                // screen would wait forever on a single failed status fetch.
+                if (!cancelled) {
+                  void handleTerminal({ job_id: jobId, status: terminalStatus } as JobStatusType);
+                }
+              });
           }
         } catch {
           // ignore heartbeats and non-JSON

@@ -25,6 +25,20 @@ from app.workers.celery_app import celery_app
 logger = logging.getLogger(__name__)
 
 
+class JobProcessingError(RuntimeError):
+    """Expected pipeline failure whose message is safe to show to the user."""
+
+
+def _ensure_transcript_present(stt_result: dict) -> None:
+    if str(stt_result.get("text") or "").strip():
+        return
+    if any(str(segment.get("text") or "").strip() for segment in stt_result.get("segments") or []):
+        return
+    raise JobProcessingError(
+        "음성을 인식하지 못했습니다. 무음 구간만 있거나 손상된 파일인지 확인해주세요."
+    )
+
+
 PROGRESS_BY_STEP = {
     "uploaded": 5,
     "preprocessing": 15,
@@ -201,6 +215,7 @@ def process_job(job_id: str) -> None:
 
         _set_job_step(job_id, "stt")
         stt_result = _run_stt(audio_path)
+        _ensure_transcript_present(stt_result)
         lexicon_service = LexiconCorrectionService(settings.load_lexicon_corrections())
         if lexicon_service.enabled:
             stt_result = lexicon_service.correct_stt_result(stt_result)
@@ -253,6 +268,9 @@ def process_job(job_id: str) -> None:
         logger.info("Job completed: %s", job_id)
         _cleanup_artifacts(job_id, upload_path, audio_path)
 
+    except JobProcessingError as exc:
+        logger.warning("Job failed (%s): %s", job_id, exc)
+        _fail_job(job_id, str(exc))
     except Exception:
         logger.exception("Job failed: %s", job_id)
         _fail_job(job_id, "분석에 실패했습니다. 업로드한 파일을 확인하거나 관리자에게 문의해주세요.")
