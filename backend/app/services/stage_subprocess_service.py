@@ -35,13 +35,18 @@ class StageSubprocessService:
                 audio_path,
                 str(output_path),
             ]
-            completed = subprocess.run(
-                command,
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=self.settings.gpu_stage_timeout_seconds,
-            )
+            try:
+                completed = subprocess.run(
+                    command,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=self.settings.gpu_stage_timeout_seconds,
+                )
+            except subprocess.TimeoutExpired as exc:
+                raise RuntimeError(
+                    f"{stage} subprocess timed out after {self.settings.gpu_stage_timeout_seconds}s"
+                ) from exc
             if completed.returncode != 0:
                 stderr = completed.stderr.strip() or completed.stdout.strip() or "unknown subprocess error"
                 raise RuntimeError(f"{stage} subprocess failed: {stderr[-2000:]}")

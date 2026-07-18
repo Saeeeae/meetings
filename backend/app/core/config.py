@@ -55,6 +55,7 @@ class Settings(BaseSettings):
 
     gpu_stage_subprocess: bool = True
     gpu_stage_timeout_seconds: int = 7200
+    job_time_limit_seconds: int = 21600
     recover_interrupted_jobs: bool = True
 
     vllm_on_demand: bool = False
@@ -105,22 +106,7 @@ class Settings(BaseSettings):
         "vllm_dtype",
         "vllm_extra_args",
         "vllm_command",
-        mode="before",
-    )
-    @classmethod
-    def empty_string_to_none_string(cls, value):
-        if value == "":
-            return None
-        return value
-
-    @field_validator("lexicon_path", mode="before")
-    @classmethod
-    def empty_string_to_none_path(cls, value):
-        if value == "" or value is None:
-            return None
-        return value
-
-    @field_validator(
+        "lexicon_path",
         "qwen_asr_max_inference_batch_size",
         "qwen_asr_max_new_tokens",
         "pyannote_min_speakers",
@@ -128,17 +114,11 @@ class Settings(BaseSettings):
         "pyannote_num_speakers",
         "audio_highpass_hz",
         "vllm_max_model_len",
+        "qwen_asr_return_timestamps",
         mode="before",
     )
     @classmethod
-    def empty_string_to_none_int(cls, value):
-        if value == "":
-            return None
-        return value
-
-    @field_validator("qwen_asr_return_timestamps", mode="before")
-    @classmethod
-    def empty_string_to_none_bool(cls, value):
+    def empty_string_to_none(cls, value):
         if value == "":
             return None
         return value

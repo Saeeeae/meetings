@@ -1,3 +1,4 @@
+import secrets
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -43,7 +44,7 @@ async def api_key_middleware(request: Request, call_next):
         return await call_next(request)
 
     provided = request.headers.get("x-api-key") or request.query_params.get("api_key")
-    if provided != settings.api_key:
+    if provided is None or not secrets.compare_digest(provided, settings.api_key):
         return JSONResponse(
             status_code=401,
             content={"detail": "유효한 API 키가 필요합니다."},
