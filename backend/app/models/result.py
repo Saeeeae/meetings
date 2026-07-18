@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime
 
 from sqlalchemy import DateTime, ForeignKey, JSON, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -17,6 +18,10 @@ class Result(Base):
     meeting_minutes: Mapped[str] = mapped_column(Text, nullable=False)
     summary: Mapped[str] = mapped_column(Text, nullable=False)
     segments_json: Mapped[list[dict]] = mapped_column(JSON, nullable=False)
+    bookmarks_json: Mapped[list[int] | None] = mapped_column(JSON, nullable=True, default=list)
+    highlights_json: Mapped[list[int] | None] = mapped_column(JSON, nullable=True, default=list)
+    memos_json: Mapped[list[dict] | None] = mapped_column(JSON, nullable=True, default=list)
+    transcript_edited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False

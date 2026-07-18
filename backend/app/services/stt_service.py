@@ -1,10 +1,13 @@
 from abc import ABC, abstractmethod
 import inspect
+import logging
 import wave
 from pathlib import Path
 from typing import Any
 
 from app.core.config import Settings, settings
+
+logger = logging.getLogger(__name__)
 
 
 class STTService(ABC):
@@ -195,7 +198,8 @@ class QwenASRSTTService(STTService):
                 frames = audio.getnframes()
                 rate = audio.getframerate()
                 return float(frames / rate) if rate else 0.0
-        except (EOFError, wave.Error, OSError):
+        except (EOFError, wave.Error, OSError) as exc:
+            logger.warning("Failed to read audio duration from %s: %s", audio_path, exc)
             return 0.0
 
     def _format_segment_text(self, tokens: list[str], language: str | None) -> str:
@@ -299,6 +303,7 @@ class QwenASRSTTService(STTService):
                 call_kwargs["hotwords"] = context_text
         results = model.transcribe(**call_kwargs)
         if not results:
+            logger.warning("Qwen ASR returned no results for %s", audio_path)
             return {"language": language or "unknown", "text": "", "segments": []}
 
         result = results[0]

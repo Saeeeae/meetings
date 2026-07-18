@@ -39,6 +39,11 @@ def init_db() -> None:
     if _run_alembic_migrations():
         return
 
+    if settings.app_env.strip().lower() == "production":
+        raise RuntimeError(
+            "Alembic migrations could not run. Refusing to fall back to create_all() "
+            "in production because schema drift would go unnoticed."
+        )
     logger.warning("Alembic not available; falling back to Base.metadata.create_all().")
     Base.metadata.create_all(bind=engine)
 

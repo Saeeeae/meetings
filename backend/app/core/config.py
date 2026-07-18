@@ -5,6 +5,8 @@ from urllib.parse import urlparse, urlunparse
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.core.lexicon import load_lexicon
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
@@ -28,7 +30,7 @@ class Settings(BaseSettings):
     stt_provider: str = "qwen_asr"
     stt_language: str = "ko"
     stt_context: str | None = None
-    lexicon_path: Path | None = None
+    lexicon_path: Path | None = Path("config/stt_dictionary.json")
     qwen_asr_model: str | None = "Qwen/Qwen3-ASR-1.7B"
     qwen_asr_forced_aligner_model: str | None = "Qwen/Qwen3-ForcedAligner-0.6B"
     qwen_asr_dtype: str | None = "bfloat16"
@@ -53,6 +55,8 @@ class Settings(BaseSettings):
 
     gpu_stage_subprocess: bool = True
     gpu_stage_timeout_seconds: int = 7200
+    job_time_limit_seconds: int = 21600
+    recover_interrupted_jobs: bool = True
 
     vllm_on_demand: bool = False
     vllm_model: str | None = None
@@ -102,22 +106,7 @@ class Settings(BaseSettings):
         "vllm_dtype",
         "vllm_extra_args",
         "vllm_command",
-        mode="before",
-    )
-    @classmethod
-    def empty_string_to_none_string(cls, value):
-        if value == "":
-            return None
-        return value
-
-    @field_validator("lexicon_path", mode="before")
-    @classmethod
-    def empty_string_to_none_path(cls, value):
-        if value == "" or value is None:
-            return None
-        return value
-
-    @field_validator(
+        "lexicon_path",
         "qwen_asr_max_inference_batch_size",
         "qwen_asr_max_new_tokens",
         "pyannote_min_speakers",
@@ -125,17 +114,11 @@ class Settings(BaseSettings):
         "pyannote_num_speakers",
         "audio_highpass_hz",
         "vllm_max_model_len",
+        "qwen_asr_return_timestamps",
         mode="before",
     )
     @classmethod
-    def empty_string_to_none_int(cls, value):
-        if value == "":
-            return None
-        return value
-
-    @field_validator("qwen_asr_return_timestamps", mode="before")
-    @classmethod
-    def empty_string_to_none_bool(cls, value):
+    def empty_string_to_none(cls, value):
         if value == "":
             return None
         return value
@@ -174,18 +157,58 @@ class Settings(BaseSettings):
                 term = raw.strip()
                 if term:
                     terms.append(term)
-        if self.lexicon_path and self.lexicon_path.is_file():
-            for line in self.lexicon_path.read_text(encoding="utf-8").splitlines():
-                term = line.strip()
-                if term and not term.startswith("#"):
-                    terms.append(term)
+        terms.extend(load_lexicon(self.lexicon_path).terms)
         seen: set[str] = set()
         unique: list[str] = []
         for term in terms:
-            if term not in seen:
-                seen.add(term)
+            normalized = term.casefold()
+            if normalized not in seen:
+                seen.add(normalized)
                 unique.append(term)
         return unique
+
+    def load_lexicon_corrections(self) -> dict[str, str]:
+        return load_lexicon(self.lexicon_path).corrections
+
+    def load_lexicon_prompt_entries(self) -> list[str]:
+        corrections = self.load_lexicon_corrections()
+        entries = [f"{source} -> {target}" for source, target in corrections.items()]
+        mapped_terms = {target.casefold() for target in corrections.values()}
+        entries.extend(term for term in self.load_lexicon_terms() if term.casefold() not in mapped_terms)
+        return entries
+
+    def validate_runtime_configuration(self) -> None:
+        if self.app_env.strip().lower() != "production":
+            return
+
+        errors: list[str] = []
+        if not self.api_key:
+            errors.append("API_KEY is required")
+        mock_providers = [
+            name
+            for name, value in (
+                ("STT_PROVIDER", self.stt_provider),
+                ("DIARIZATION_PROVIDER", self.diarization_provider),
+                ("LLM_PROVIDER", self.llm_provider),
+            )
+            if value.strip().lower() == "mock"
+        ]
+        if mock_providers:
+            errors.append(f"mock providers are not allowed: {', '.join(mock_providers)}")
+        unsafe_origins = [
+            origin
+            for origin in self.cors_origin_list
+            if (
+                origin == "*"
+                or "localhost" in origin
+                or "127.0.0.1" in origin
+                or not origin.lower().startswith("https://")
+            )
+        ]
+        if unsafe_origins:
+            errors.append(f"production CORS_ORIGINS must use deployed HTTPS origins: {', '.join(unsafe_origins)}")
+        if errors:
+            raise RuntimeError("Unsafe production configuration: " + "; ".join(errors))
 
     @property
     def vllm_health_url(self) -> str:

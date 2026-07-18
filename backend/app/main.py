@@ -1,3 +1,4 @@
+import secrets
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -15,6 +16,7 @@ configure_logging()
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    settings.validate_runtime_configuration()
     settings.storage_dir.mkdir(parents=True, exist_ok=True)
     settings.models_dir.mkdir(parents=True, exist_ok=True)
     init_db()
@@ -27,7 +29,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,
     allow_credentials=False,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type", "X-API-Key"],
 )
 
@@ -42,7 +44,7 @@ async def api_key_middleware(request: Request, call_next):
         return await call_next(request)
 
     provided = request.headers.get("x-api-key") or request.query_params.get("api_key")
-    if provided != settings.api_key:
+    if provided is None or not secrets.compare_digest(provided, settings.api_key):
         return JSONResponse(
             status_code=401,
             content={"detail": "유효한 API 키가 필요합니다."},

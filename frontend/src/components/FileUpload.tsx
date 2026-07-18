@@ -1,5 +1,5 @@
 import { ChangeEvent, DragEvent, useState } from "react";
-import { FileAudio, UploadCloud } from "lucide-react";
+import { FileAudio2, ShieldCheck, UploadCloud } from "lucide-react";
 
 type FileUploadProps = {
   disabled?: boolean;
@@ -27,13 +27,14 @@ export function FileUpload({ disabled = false, onUpload }: FileUploadProps) {
   };
 
   return (
-    <section className="tool-panel">
-      <div className="section-heading">
+    <section className="upload-surface">
+      <div className="upload-heading">
         <div>
-          <p className="eyebrow">Meeting Minutes AI</p>
-          <h1>회의 녹음 파일 업로드</h1>
+          <p className="eyebrow">NEW VOICE NOTE</p>
+          <h2>새 음성 노트 만들기</h2>
+          <p>회의, 강의, 인터뷰 파일을 올리면 음성 기록과 요약을 생성합니다.</p>
         </div>
-        <FileAudio aria-hidden="true" />
+        <FileAudio2 aria-hidden="true" />
       </div>
 
       <label
@@ -52,14 +53,13 @@ export function FileUpload({ disabled = false, onUpload }: FileUploadProps) {
           disabled={disabled}
         />
         <UploadCloud aria-hidden="true" />
-        <span>{selectedFile ? selectedFile.name : "파일을 끌어오거나 선택하세요"}</span>
-        <small>.mp3, .wav, .m4a, .aac, .flac, .mp4, .webm</small>
+        <span>{selectedFile ? selectedFile.name : "파일을 끌어놓거나 눌러서 선택하세요"}</span>
+        <small>{selectedFile ? `${(selectedFile.size / 1024 / 1024).toFixed(1)} MB` : ".mp3, .wav, .m4a, .aac, .flac, .mp4, .webm"}</small>
       </label>
 
-      <div className="notice-list">
-        <p>회의 상대방 소리까지 분석하려면, 업로드하는 녹음 파일에 내 목소리와 상대방 목소리가 모두 포함되어 있어야 합니다.</p>
-        <p>업로드 전 파일을 재생해 상대방 음성이 포함되어 있는지 확인해주세요.</p>
-        <p>회의 녹음 파일은 서버로 업로드됩니다. 참가자 동의와 내부 보안 정책을 먼저 확인해주세요.</p>
+      <div className="upload-hint">
+        <ShieldCheck size={17} aria-hidden="true" />
+        <p>참가자 동의와 내부 보안 정책을 확인하고, 상대방 음성이 녹음되어 있는지 먼저 재생해 확인해주세요.</p>
       </div>
 
       <button
@@ -69,7 +69,7 @@ export function FileUpload({ disabled = false, onUpload }: FileUploadProps) {
         onClick={() => selectedFile && onUpload(selectedFile)}
       >
         <UploadCloud size={18} aria-hidden="true" />
-        업로드 시작
+        음성 노트 만들기
       </button>
     </section>
   );

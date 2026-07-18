@@ -1,4 +1,5 @@
 from datetime import datetime
+from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict
 
@@ -13,6 +14,8 @@ class JobStatusResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     job_id: str
+    filename: str
+    title: str
     status: str
     progress: int
     current_step: str
@@ -22,8 +25,11 @@ class JobStatusResponse(BaseModel):
 
 
 def job_to_status_response(job) -> JobStatusResponse:
+    title = (job.title or "").strip() or Path(job.original_filename).stem or "제목 없는 노트"
     return JobStatusResponse(
         job_id=job.id,
+        filename=job.original_filename,
+        title=title,
         status=job.status,
         progress=job.progress,
         current_step=job.current_step,

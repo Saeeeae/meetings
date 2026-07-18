@@ -1,156 +1,441 @@
-import { useMemo, useRef, useState } from "react";
-import { Download, FileJson, FileText, ListChecks, MessageSquareText } from "lucide-react";
+import { FormEvent, useMemo, useRef, useState } from "react";
+import {
+  AlertCircle,
+  Bookmark,
+  Check,
+  ChevronDown,
+  Download,
+  FileJson,
+  FileText,
+  Highlighter,
+  ListFilter,
+  LoaderCircle,
+  MessageSquarePlus,
+  Pencil,
+  Search,
+  Sparkles,
+  StickyNote,
+  Trash2,
+  X,
+} from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { AnalysisResult, audioUrl, downloadUrl, ResultSegment } from "../api/client";
+import {
+  AnalysisResult,
+  audioUrl,
+  deleteJob,
+  downloadUrl,
+  JobStatus,
+  NoteMemo,
+  ResultSegment,
+  ResultUpdate,
+  updateResult,
+} from "../api/client";
+import { useAudioPlayer } from "../hooks/useAudioPlayer";
+import { formatTime } from "../utils/format";
+import { AudioDock } from "./AudioDock";
+import { TranscriptSegment } from "./TranscriptSegment";
 
 type Props = {
   result: AnalysisResult;
+  job: JobStatus;
+  onResultUpdated: (result: AnalysisResult) => void;
+  onDeleted: (jobId: string) => void;
 };
 
-type TabKey = "speaker" | "cleaned" | "minutes" | "summary" | "segments" | "json";
+type InsightTab = "summary" | "minutes" | "memo" | "saved";
+type SaveStatus = "idle" | "saving" | "saved" | "error" | "deleting";
 
-const TABS: Array<{ key: TabKey; label: string }> = [
-  { key: "speaker", label: "화자별 스크립트" },
-  { key: "cleaned", label: "정리된 스크립트" },
-  { key: "minutes", label: "회의록" },
-  { key: "summary", label: "요약본" },
-  { key: "segments", label: "세그먼트" },
-  { key: "json", label: "JSON" },
-];
+const SPEAKER_TONES = ["tone-mint", "tone-coral", "tone-violet", "tone-blue", "tone-amber", "tone-rose"];
 
-const MARKDOWN_TABS: TabKey[] = ["minutes", "summary"];
+export function ResultViewer({ result, job, onResultUpdated, onDeleted }: Props) {
+  const memoInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const saveRequestRef = useRef(0);
+  const [title, setTitle] = useState(result.title);
+  const [titleDraft, setTitleDraft] = useState(result.title);
+  const [isEditingTitle, setIsEditingTitle] = useState(false);
+  const [segments, setSegments] = useState<ResultSegment[]>(result.segments);
+  const [bookmarks, setBookmarks] = useState<number[]>(result.bookmarks);
+  const [highlights, setHighlights] = useState<number[]>(result.highlights);
+  const [memos, setMemos] = useState<NoteMemo[]>(result.memos);
+  const [transcriptEditedAt, setTranscriptEditedAt] = useState(result.transcript_edited_at);
+  const [activeTab, setActiveTab] = useState<InsightTab>("summary");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [selectedSpeaker, setSelectedSpeaker] = useState("all");
+  const [memoDraft, setMemoDraft] = useState("");
+  const [memoTime, setMemoTime] = useState(0);
+  const [editingMemoId, setEditingMemoId] = useState<string | null>(null);
+  const [memoEditDraft, setMemoEditDraft] = useState("");
+  const [showDownloads, setShowDownloads] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
+  const [saveError, setSaveError] = useState<string | null>(null);
 
-function formatTime(seconds: number): string {
-  const total = Math.max(0, Math.floor(seconds));
-  const h = Math.floor(total / 3600);
-  const m = Math.floor((total % 3600) / 60);
-  const s = total % 60;
-  if (h > 0) return `${h.toString().padStart(2, "0")}:${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
-  return `${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
-}
+  const fallbackDuration = segments[segments.length - 1]?.end ?? 0;
+  const player = useAudioPlayer(fallbackDuration);
+  const { currentTime, visibleDuration, seekTo } = player;
 
-function contentForTab(result: AnalysisResult, tab: TabKey) {
-  switch (tab) {
-    case "speaker":
-      return result.speaker_transcript;
-    case "cleaned":
-      return result.cleaned_transcript;
-    case "minutes":
-      return result.meeting_minutes;
-    case "summary":
-      return result.summary;
-    case "segments":
-      return "";
-    case "json":
-      return JSON.stringify(result, null, 2);
-  }
-}
+  const persistPatch = async (patch: ResultUpdate) => {
+    const requestId = ++saveRequestRef.current;
+    setSaveStatus("saving");
+    setSaveError(null);
+    try {
+      const updated = await updateResult(result.job_id, patch);
+      onResultUpdated(updated);
+      setTranscriptEditedAt(updated.transcript_edited_at);
+      if (requestId === saveRequestRef.current) {
+        setSaveStatus("saved");
+        window.setTimeout(() => {
+          if (requestId === saveRequestRef.current) setSaveStatus("idle");
+        }, 1600);
+      }
+    } catch (error) {
+      if (requestId === saveRequestRef.current) {
+        setSaveStatus("error");
+        setSaveError(error instanceof Error ? error.message : "변경 내용을 저장하지 못했습니다.");
+      }
+    }
+  };
 
-export function ResultViewer({ result }: Props) {
-  const [activeTab, setActiveTab] = useState<TabKey>("minutes");
-  const [audioAvailable, setAudioAvailable] = useState(true);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const speakers = useMemo(() => Array.from(new Set(segments.map((segment) => segment.speaker))), [segments]);
+  const speakerLabels = useMemo(
+    () => new Map(speakers.map((speaker, index) => [
+      speaker,
+      speaker === "UNKNOWN"
+        ? "화자 미상"
+        : /^SPEAKER_|^[A-Z]$/.test(speaker)
+          ? `참석자 ${index + 1}`
+          : speaker,
+    ])),
+    [speakers],
+  );
+  const speakerTone = (speaker: string) => SPEAKER_TONES[Math.max(0, speakers.indexOf(speaker)) % SPEAKER_TONES.length];
 
-  const activeContent = useMemo(() => contentForTab(result, activeTab), [result, activeTab]);
-  const renderAsMarkdown = MARKDOWN_TABS.includes(activeTab);
+  const filteredSegments = useMemo(() => {
+    const normalizedQuery = searchQuery.trim().toLowerCase();
+    return segments
+      .map((segment, index) => ({ segment, index }))
+      .filter(({ segment }) => selectedSpeaker === "all" || segment.speaker === selectedSpeaker)
+      .filter(({ segment }) => {
+        if (!normalizedQuery) return true;
+        return segment.text.toLowerCase().includes(normalizedQuery)
+          || (speakerLabels.get(segment.speaker) ?? "").toLowerCase().includes(normalizedQuery);
+      });
+  }, [segments, searchQuery, selectedSpeaker, speakerLabels]);
 
-  const handleSeek = (start: number) => {
-    const audio = audioRef.current;
-    if (!audio) return;
-    audio.currentTime = Math.max(0, start);
-    void audio.play();
+  const savedSegments = useMemo(() => {
+    const indices = Array.from(new Set([...bookmarks, ...highlights])).sort((a, b) => a - b);
+    return indices.map((index) => ({ index, segment: segments[index] })).filter((item) => item.segment);
+  }, [bookmarks, highlights, segments]);
+
+  const saveTitle = (event: FormEvent) => {
+    event.preventDefault();
+    const nextTitle = titleDraft.trim();
+    if (!nextTitle) return;
+    setTitle(nextTitle);
+    setIsEditingTitle(false);
+    void persistPatch({ title: nextTitle });
+  };
+
+  const toggleBookmark = (index: number) => {
+    const next = bookmarks.includes(index) ? bookmarks.filter((value) => value !== index) : [...bookmarks, index];
+    setBookmarks(next);
+    void persistPatch({ bookmarks: next });
+  };
+
+  const toggleHighlight = (index: number) => {
+    const next = highlights.includes(index) ? highlights.filter((value) => value !== index) : [...highlights, index];
+    setHighlights(next);
+    void persistPatch({ highlights: next });
+  };
+
+  const updateSegmentText = (index: number, text: string) => {
+    const next = segments.map((segment, segmentIndex) => (
+      segmentIndex === index ? { ...segment, text: text.trim() } : segment
+    ));
+    setSegments(next);
+    void persistPatch({ segments: next });
+  };
+
+  const renameSpeaker = (speaker: string, nextName: string) => {
+    const trimmedName = nextName.trim();
+    if (!trimmedName) return;
+    const next = segments.map((segment) => (
+      segment.speaker === speaker ? { ...segment, speaker: trimmedName } : segment
+    ));
+    setSegments(next);
+    setSelectedSpeaker("all");
+    void persistPatch({ segments: next });
+  };
+
+  const openMemoAt = (time: number) => {
+    setMemoTime(time);
+    setActiveTab("memo");
+    window.setTimeout(() => memoInputRef.current?.focus(), 0);
+  };
+
+  const addMemo = () => {
+    const text = memoDraft.trim();
+    if (!text) return;
+    const next = [
+      ...memos,
+      { id: `${Date.now()}`, time: memoTime, text, created_at: new Date().toISOString() },
+    ];
+    setMemos(next);
+    setMemoDraft("");
+    void persistPatch({ memos: next });
+  };
+
+  const deleteMemo = (memoId: string) => {
+    const next = memos.filter((memo) => memo.id !== memoId);
+    setMemos(next);
+    void persistPatch({ memos: next });
+  };
+
+  const saveMemoEdit = (memoId: string) => {
+    const text = memoEditDraft.trim();
+    if (!text) return;
+    const next = memos.map((memo) => memo.id === memoId ? { ...memo, text } : memo);
+    setMemos(next);
+    setEditingMemoId(null);
+    setMemoEditDraft("");
+    void persistPatch({ memos: next });
+  };
+
+  const handleDelete = async () => {
+    const confirmed = window.confirm(`"${title}" 노트와 저장된 음성·기록을 모두 삭제할까요? 이 작업은 되돌릴 수 없습니다.`);
+    if (!confirmed) return;
+    setSaveStatus("deleting");
+    setSaveError(null);
+    try {
+      await deleteJob(result.job_id);
+      onDeleted(result.job_id);
+    } catch (error) {
+      setSaveStatus("error");
+      setSaveError(error instanceof Error ? error.message : "노트를 삭제하지 못했습니다.");
+    }
   };
 
   return (
-    <section className="tool-panel result-panel">
-      <div className="section-heading">
-        <div>
-          <p className="eyebrow">Result</p>
-          <h2>분석 결과</h2>
+    <section className="note-workspace">
+      <header className="note-detail-header">
+        <div className="note-title-block">
+          <div className="note-title-row">
+            {isEditingTitle ? (
+              <form className="title-editor" onSubmit={saveTitle}>
+                <input
+                  value={titleDraft}
+                  onChange={(event) => setTitleDraft(event.target.value)}
+                  autoFocus
+                  maxLength={255}
+                  aria-label="노트 제목"
+                />
+                <button className="icon-button" type="submit" aria-label="제목 저장"><Check size={17} /></button>
+                <button
+                  className="icon-button"
+                  type="button"
+                  onClick={() => { setTitleDraft(title); setIsEditingTitle(false); }}
+                  aria-label="제목 편집 취소"
+                >
+                  <X size={17} />
+                </button>
+              </form>
+            ) : (
+              <>
+                <h1>{title}</h1>
+                <button
+                  className="icon-button title-edit-button"
+                  type="button"
+                  onClick={() => setIsEditingTitle(true)}
+                  aria-label="제목 편집"
+                >
+                  <Pencil size={15} />
+                </button>
+              </>
+            )}
+            <span className="complete-badge"><Check size={13} /> 분석 완료</span>
+          </div>
+          <p>
+            {new Date(job.created_at).toLocaleString("ko-KR", { year: "numeric", month: "long", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+            <span /> {formatTime(visibleDuration)}
+            <span /> 참석자 {speakers.length || 1}명
+            {transcriptEditedAt ? <><span /> 기록 수정됨</> : null}
+          </p>
+          {saveStatus !== "idle" || saveError ? (
+            <div className={`save-indicator is-${saveStatus}`} role={saveStatus === "error" ? "alert" : "status"}>
+              {saveStatus === "saving" ? <><LoaderCircle className="spin" size={13} /> 저장 중</> : null}
+              {saveStatus === "saved" ? <><Check size={13} /> 저장됨</> : null}
+              {saveStatus === "deleting" ? <><LoaderCircle className="spin" size={13} /> 삭제 중</> : null}
+              {saveStatus === "error" ? <><AlertCircle size={13} /> {saveError}</> : null}
+            </div>
+          ) : null}
         </div>
-        <ListChecks aria-hidden="true" />
-      </div>
 
-      {audioAvailable ? (
-        <audio
-          ref={audioRef}
-          src={audioUrl(result.job_id)}
-          controls
-          preload="metadata"
-          className="result-audio"
-          onError={() => setAudioAvailable(false)}
-        />
-      ) : (
-        <small className="muted">오디오 미리보기를 불러올 수 없습니다 (보관 기간 만료 또는 비활성화).</small>
-      )}
-
-      <div className="download-row">
-        <a className="secondary-button" href={downloadUrl(result.job_id, "minutes")}>
-          <FileText size={16} aria-hidden="true" />
-          회의록
-        </a>
-        <a className="secondary-button" href={downloadUrl(result.job_id, "summary")}>
-          <MessageSquareText size={16} aria-hidden="true" />
-          요약
-        </a>
-        <a className="secondary-button" href={downloadUrl(result.job_id, "transcript")}>
-          <Download size={16} aria-hidden="true" />
-          스크립트
-        </a>
-        <a className="secondary-button" href={downloadUrl(result.job_id, "cleaned_transcript")}>
-          <Download size={16} aria-hidden="true" />
-          정리본
-        </a>
-        <a className="secondary-button" href={downloadUrl(result.job_id, "json")}>
-          <FileJson size={16} aria-hidden="true" />
-          JSON
-        </a>
-      </div>
-
-      <div className="tab-row" role="tablist" aria-label="결과 탭">
-        {TABS.map((tab) => (
+        <div className="note-header-actions">
+          <label className="transcript-search header-search">
+            <Search size={16} />
+            <input value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="대화 내용 검색" />
+            {searchQuery ? <button type="button" onClick={() => setSearchQuery("")} aria-label="검색어 지우기"><X size={14} /></button> : null}
+          </label>
+          <div className="download-menu-wrap">
+            <button className="secondary-command" type="button" onClick={() => setShowDownloads((value) => !value)}>
+              <Download size={16} /> 내보내기 <ChevronDown size={14} />
+            </button>
+            {showDownloads ? (
+              <div className="download-menu">
+                <a href={downloadUrl(result.job_id, "transcript")}><FileText size={15} /> 음성 기록</a>
+                <a href={downloadUrl(result.job_id, "minutes")}><StickyNote size={15} /> 회의록</a>
+                <a href={downloadUrl(result.job_id, "summary")}><Sparkles size={15} /> AI 요약</a>
+                <a href={downloadUrl(result.job_id, "json")}><FileJson size={15} /> JSON 데이터</a>
+              </div>
+            ) : null}
+          </div>
           <button
-            key={tab.key}
-            className={activeTab === tab.key ? "tab active" : "tab"}
+            className="icon-button danger-icon-button"
             type="button"
-            role="tab"
-            aria-selected={activeTab === tab.key}
-            onClick={() => setActiveTab(tab.key)}
+            onClick={() => void handleDelete()}
+            disabled={saveStatus === "deleting"}
+            aria-label="노트 삭제"
+            title="노트 삭제"
           >
-            {tab.label}
+            <Trash2 size={17} />
           </button>
-        ))}
+        </div>
+      </header>
+
+      <div className="note-detail-grid">
+        <section className="transcript-pane">
+          <div className="pane-heading">
+            <div>
+              <h2>음성 기록</h2>
+              <span>{filteredSegments.length}개 구간</span>
+            </div>
+            <ListFilter size={18} aria-hidden="true" />
+          </div>
+
+          <div className="speaker-filters" aria-label="참석자 필터">
+            <button type="button" className={selectedSpeaker === "all" ? "is-active" : ""} onClick={() => setSelectedSpeaker("all")}>전체</button>
+            {speakers.map((speaker) => (
+              <button key={speaker} type="button" className={selectedSpeaker === speaker ? "is-active" : ""} onClick={() => setSelectedSpeaker(speaker)}>
+                <span className={`speaker-filter-dot ${speakerTone(speaker)}`} />
+                {speakerLabels.get(speaker)}
+              </button>
+            ))}
+          </div>
+
+          <div className="transcript-list">
+            {filteredSegments.length > 0 ? filteredSegments.map(({ segment, index }) => (
+              <TranscriptSegment
+                key={`${segment.start}-${index}`}
+                segment={segment}
+                label={speakerLabels.get(segment.speaker) ?? segment.speaker}
+                tone={speakerTone(segment.speaker)}
+                query={searchQuery}
+                isBookmarked={bookmarks.includes(index)}
+                isHighlighted={highlights.includes(index)}
+                onSeek={() => seekTo(segment.start)}
+                onBookmark={() => toggleBookmark(index)}
+                onHighlight={() => toggleHighlight(index)}
+                onMemo={() => openMemoAt(segment.start)}
+                onEditText={(text) => updateSegmentText(index, text)}
+                onRenameSpeaker={(nextName) => renameSpeaker(segment.speaker, nextName)}
+              />
+            )) : (
+              <div className="transcript-empty"><Search size={22} /><p>조건에 맞는 대화가 없습니다.</p></div>
+            )}
+          </div>
+        </section>
+
+        <aside className="insight-pane">
+          <div className="insight-tabs" role="tablist" aria-label="노트 도구">
+            <button type="button" className={activeTab === "summary" ? "is-active" : ""} onClick={() => setActiveTab("summary")}>AI 요약</button>
+            <button type="button" className={activeTab === "minutes" ? "is-active" : ""} onClick={() => setActiveTab("minutes")}>회의록</button>
+            <button type="button" className={activeTab === "memo" ? "is-active" : ""} onClick={() => { setMemoTime(currentTime); setActiveTab("memo"); }}>메모</button>
+            <button type="button" className={activeTab === "saved" ? "is-active" : ""} onClick={() => setActiveTab("saved")}>모아보기</button>
+          </div>
+
+          <div className="insight-content">
+            {activeTab === "summary" ? (
+              <div className="ai-note">
+                <div className="ai-note-label"><Sparkles size={16} /> AI가 정리한 핵심 내용</div>
+                {transcriptEditedAt ? (
+                  <div className="stale-summary-notice">
+                    <AlertCircle size={15} />
+                    <span>음성 기록을 수정했습니다. AI 요약과 회의록은 최초 분석 내용을 유지합니다.</span>
+                  </div>
+                ) : null}
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{result.summary}</ReactMarkdown>
+              </div>
+            ) : null}
+            {activeTab === "minutes" ? (
+              <div className="markdown-note">
+                {transcriptEditedAt ? (
+                  <div className="stale-summary-notice">
+                    <AlertCircle size={15} />
+                    <span>음성 기록 수정 후 회의록 재생성은 아직 지원하지 않습니다.</span>
+                  </div>
+                ) : null}
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{result.meeting_minutes}</ReactMarkdown>
+              </div>
+            ) : null}
+            {activeTab === "memo" ? (
+              <div className="memo-panel">
+                <div className="memo-composer">
+                  <button type="button" className="memo-time" onClick={() => seekTo(memoTime)}>{formatTime(memoTime)}</button>
+                  <textarea ref={memoInputRef} value={memoDraft} onChange={(event) => setMemoDraft(event.target.value)} placeholder="이 시점에 대한 메모를 남겨보세요" />
+                  <button className="primary-command" type="button" onClick={addMemo} disabled={!memoDraft.trim()}><MessageSquarePlus size={16} /> 메모 추가</button>
+                </div>
+                <div className="memo-list">
+                  {memos.length > 0 ? memos.map((memo) => (
+                    <div className="memo-item" key={memo.id}>
+                      <button type="button" onClick={() => seekTo(memo.time)}>{formatTime(memo.time)}</button>
+                      {editingMemoId === memo.id ? (
+                        <div className="memo-inline-editor">
+                          <textarea value={memoEditDraft} onChange={(event) => setMemoEditDraft(event.target.value)} autoFocus />
+                          <button type="button" onClick={() => saveMemoEdit(memo.id)} aria-label="메모 저장"><Check size={14} /></button>
+                          <button type="button" onClick={() => setEditingMemoId(null)} aria-label="메모 편집 취소"><X size={14} /></button>
+                        </div>
+                      ) : (
+                        <p>{memo.text}</p>
+                      )}
+                      {editingMemoId !== memo.id ? (
+                        <>
+                          <button
+                            type="button"
+                            className="memo-edit"
+                            onClick={() => { setEditingMemoId(memo.id); setMemoEditDraft(memo.text); }}
+                            aria-label="메모 편집"
+                          >
+                            <Pencil size={14} />
+                          </button>
+                          <button type="button" className="memo-delete" onClick={() => deleteMemo(memo.id)} aria-label="메모 삭제"><X size={14} /></button>
+                        </>
+                      ) : null}
+                    </div>
+                  )) : <p className="empty-copy">아직 작성한 메모가 없습니다.</p>}
+                </div>
+              </div>
+            ) : null}
+            {activeTab === "saved" ? (
+              <div className="saved-panel">
+                <div className="saved-summary">
+                  <span><Bookmark size={15} /> 북마크 {bookmarks.length}</span>
+                  <span><Highlighter size={15} /> 하이라이트 {highlights.length}</span>
+                </div>
+                {savedSegments.length > 0 ? savedSegments.map(({ segment, index }) => (
+                  <button className="saved-segment" type="button" key={index} onClick={() => seekTo(segment.start)}>
+                    <span>{formatTime(segment.start)}</span>
+                    <strong>{speakerLabels.get(segment.speaker)}</strong>
+                    <p>{segment.text}</p>
+                    <span className="saved-icons">{bookmarks.includes(index) ? <Bookmark size={14} fill="currentColor" /> : null}{highlights.includes(index) ? <Highlighter size={14} /> : null}</span>
+                  </button>
+                )) : <p className="empty-copy">중요한 구간에 북마크나 하이라이트를 추가해보세요.</p>}
+              </div>
+            ) : null}
+          </div>
+        </aside>
       </div>
 
-      {activeTab === "segments" ? (
-        <SegmentsList segments={result.segments} onSeek={handleSeek} />
-      ) : renderAsMarkdown ? (
-        <div className="result-content result-markdown">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{activeContent}</ReactMarkdown>
-        </div>
-      ) : (
-        <pre className="result-content">{activeContent}</pre>
-      )}
+      <AudioDock src={audioUrl(result.job_id)} player={player} />
     </section>
-  );
-}
-
-function SegmentsList({ segments, onSeek }: { segments: ResultSegment[]; onSeek: (start: number) => void }) {
-  if (!segments || segments.length === 0) {
-    return <p className="muted">세그먼트가 없습니다.</p>;
-  }
-  return (
-    <ul className="segment-list">
-      {segments.map((segment, index) => (
-        <li key={`${segment.start}-${index}`}>
-          <button type="button" className="segment-row" onClick={() => onSeek(segment.start)}>
-            <span className="segment-time">{formatTime(segment.start)}</span>
-            <span className="segment-speaker">{segment.speaker}</span>
-            <span className="segment-text">{segment.text}</span>
-          </button>
-        </li>
-      ))}
-    </ul>
   );
 }

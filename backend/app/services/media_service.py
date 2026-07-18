@@ -32,25 +32,60 @@ class MediaService:
         if output_path.exists() and output_path.stat().st_size > 0:
             return str(output_path)
 
+        # Write to a temp name and rename on success, so an interrupted run
+        # never leaves a partial file that a retry would silently reuse.
+        temp_path = self.processed_dir / f"{job_id}.partial.wav"
         filter_chain = self._build_filter_chain()
         command = ["ffmpeg", "-y", "-i", str(source)]
         if filter_chain:
             command.extend(["-af", filter_chain])
-        command.extend(["-ac", "1", "-ar", "16000", str(output_path)])
+        command.extend(["-ac", "1", "-ar", "16000", str(temp_path)])
 
         logger.info("ffmpeg preprocess for %s: filter=%s", job_id, filter_chain or "(none)")
 
         try:
-            completed = subprocess.run(command, capture_output=True, text=True, check=False)
+            completed = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=self.settings.gpu_stage_timeout_seconds,
+            )
         except FileNotFoundError as exc:
             raise MediaProcessingError("ffmpeg is not installed or not available in PATH") from exc
+        except subprocess.TimeoutExpired as exc:
+            temp_path.unlink(missing_ok=True)
+            raise MediaProcessingError("ffmpeg preprocessing timed out") from exc
 
         if completed.returncode != 0:
-            output_path.unlink(missing_ok=True)
+            temp_path.unlink(missing_ok=True)
             detail = completed.stderr.strip().splitlines()[-1] if completed.stderr else "unknown ffmpeg error"
             raise MediaProcessingError(f"ffmpeg failed: {detail}")
 
+        temp_path.replace(output_path)
         return str(output_path)
+
+    def has_audio_stream(self, input_path: str) -> bool:
+        command = [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "a",
+            "-show_entries",
+            "stream=codec_type",
+            "-of",
+            "csv=p=0",
+            str(input_path),
+        ]
+        try:
+            completed = subprocess.run(command, capture_output=True, text=True, check=False, timeout=60)
+        except FileNotFoundError:
+            logger.warning("ffprobe is not available; skipping audio content validation.")
+            return True
+        except subprocess.TimeoutExpired:
+            return False
+        return completed.returncode == 0 and "audio" in completed.stdout
 
     def _build_filter_chain(self) -> str:
         filters: list[str] = []

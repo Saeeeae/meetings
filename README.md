@@ -156,6 +156,58 @@ http://localhost:5173
 
 업로드 파일과 결과 데이터는 `data/` 폴더에 저장됩니다. 다운로드된 모델은 `models/` 폴더에 저장됩니다.
 
+결과 화면에서 다음 내용은 서버에 저장됩니다.
+
+- 노트 제목
+- 참석자 이름
+- 수정한 발화문
+- 메모, 북마크, 하이라이트
+
+노트 우측 상단의 휴지통 버튼을 누르면 원본 업로드, 처리된 음성, transcript, 회의록과 메모를 함께 삭제합니다. 처리 중인 노트는 작업 충돌을 막기 위해 삭제할 수 없습니다.
+
+## 오인식 단어 사전 설정
+
+회사명, 제품명, 사람 이름처럼 음성 인식이 반복해서 틀리는 단어는 `config/stt_dictionary.json`에서 직접 고칠 수 있습니다.
+
+기본 형식은 `"잘못 인식된 표현": "화면에 표시할 올바른 표현"`입니다.
+
+```json
+{
+  "큐원": "Qwen",
+  "큐웬": "Qwen",
+  "브이 엘 엘 엠": "vLLM",
+  "에이 아이 회의록": "AI 회의록"
+}
+```
+
+사용 방법:
+
+1. `config/stt_dictionary.json`을 메모장이나 VS Code로 엽니다.
+2. 쉼표를 유지하면서 오인식 표현과 표준 표현을 추가합니다.
+3. 파일을 저장합니다.
+4. 새 녹음 파일을 업로드합니다.
+
+worker는 작업을 시작할 때 사전을 다시 읽으므로 사전만 수정한 경우 Docker를 재시작할 필요가 없습니다. 이미 완료된 결과는 자동으로 다시 바뀌지 않으므로 같은 녹음 파일을 새로 업로드해야 합니다.
+
+`.env`에는 아래 경로가 설정되어 있어야 합니다.
+
+```env
+LEXICON_PATH=config/stt_dictionary.json
+```
+
+교정은 대소문자를 구분하지 않고 긴 표현부터 적용합니다. `"api": "API"`처럼 영문 약어를 등록해도 `capitol` 같은 다른 영단어의 일부는 바꾸지 않습니다. 한 번 교정된 결과를 다시 다른 항목으로 연쇄 치환하지 않습니다.
+
+기존의 단어 힌트 파일도 계속 사용할 수 있습니다. JSON 대신 일반 텍스트 파일을 쓰려면 한 줄에 표준어 하나를 쓰거나, 아래처럼 탭으로 오인식과 표준어를 구분합니다.
+
+```text
+# 표준어 힌트
+카프카
+
+# 오인식<TAB>표준어
+큐 원	Qwen
+브이 엘 엘 엠	vLLM
+```
+
 ## 6. 종료와 재실행
 
 실행 중인 터미널에서 종료:
@@ -204,12 +256,26 @@ docker compose -f docker-compose.yml -f docker-compose.gpu.yml logs -f worker
 | --- | --- | --- |
 | `STT_PROVIDER` | 음성 인식 방식 | 실제 실행은 `qwen_asr`, 데모는 `mock` |
 | `STT_LANGUAGE` | 음성 언어 | 한국어는 `ko`, 자동 감지는 빈 값 |
+| `LEXICON_PATH` | 오인식 교정 사전 경로 | `config/stt_dictionary.json` |
 | `QWEN_ASR_MODEL` | Hugging Face Qwen ASR 모델명 | `Qwen/Qwen3-ASR-1.7B` |
 | `QWEN_ASR_FORCED_ALIGNER_MODEL` | timestamp 생성용 모델명 | `Qwen/Qwen3-ForcedAligner-0.6B` |
 | `DIARIZATION_PROVIDER` | 화자 분리 방식 | 처음 테스트는 `mock`, 실제 화자분리는 `pyannote` |
 | `LLM_PROVIDER` | 회의록 생성 LLM 방식 | 처음 테스트는 `mock` |
 | `VLLM_ON_DEMAND` | 작업 중 vLLM 자동 실행 여부 | 처음 테스트는 `false` |
+| `JOB_TIME_LIMIT_SECONDS` | job 전체 처리 시간 상한. Redis visibility timeout 기준값 | `21600` |
+| `RECOVER_INTERRUPTED_JOBS` | worker 재시작 시 중단 작업 자동 재등록 | `true` |
 | `HUGGINGFACE_TOKEN` | Hugging Face 접근 token | pyannote 사용 시 필요 |
+
+`APP_ENV=production`에서는 안전하지 않은 설정으로 시작하지 않습니다. `API_KEY`가 비어 있거나, STT·화자 분리·LLM 중 하나가 `mock`이거나, CORS 주소가 localhost이면 backend와 worker가 시작 단계에서 오류를 냅니다.
+
+편집·삭제 API:
+
+- `PATCH /api/results/{job_id}`: 제목, 발화문, 화자명, 메모, 북마크, 하이라이트 저장
+- `DELETE /api/jobs/{job_id}`: 완료·실패 작업의 원본 음성, 전처리 음성, 분석 결과와 작업 기록 삭제
+
+발화문 편집 시 기존 구간의 시작·종료 timestamp와 구간 개수는 유지됩니다. 편집 후 기존 AI 요약·회의록은 자동 재생성되지 않으며 화면에 재생성 필요 상태가 표시됩니다.
+
+이 안전장치는 단일 사내 설치의 기본 노출을 줄이는 용도입니다. 다중 사용자 로그인과 조직별 데이터 격리를 대신하지 않습니다.
 
 ## 9. 문제 해결
 
@@ -253,6 +319,7 @@ pyannote 다운로드 오류
 - `models/` 폴더는 모델 캐시이므로 운영 중 삭제하지 않기
 - 여러 작업을 동시에 돌리기 전 GPU 메모리 사용량 확인
 - 데모 모드 결과는 실제 분석 결과가 아니라는 점을 사용자에게 고지
+- 상용화 전에 [`docs/COMMERCIALIZATION_TODO.md`](docs/COMMERCIALIZATION_TODO.md)의 P0 항목 완료
 
 ## 참고: 내부 구조
 
@@ -264,6 +331,7 @@ pyannote 다운로드 오류
 → 녹음 파일 업로드
 → Backend가 분석 Job 생성
 → Worker가 STT 실행
+→ 오인식 단어 사전 적용
 → Worker가 화자 분리 실행
 → STT 결과와 화자 분리 결과 결합
 → LLM으로 스크립트 정리
