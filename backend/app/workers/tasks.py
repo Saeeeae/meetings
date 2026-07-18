@@ -94,6 +94,7 @@ def _set_job_step(job_id: str, step: str, status: str = "processing") -> None:
     with _session_scope() as db:
         job = db.get(Job, job_id)
         if job is None:
+            logger.warning("Job row disappeared while setting step %s: %s", step, job_id)
             return
         job.status = status
         job.current_step = step
@@ -107,6 +108,7 @@ def _fail_job(job_id: str, message: str) -> None:
     with _session_scope() as db:
         job = db.get(Job, job_id)
         if job is None:
+            logger.warning("Job row disappeared while marking failure: %s", job_id)
             return
         job.status = "failed"
         job.current_step = "failed"
